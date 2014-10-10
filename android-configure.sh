@@ -20,20 +20,21 @@ OPTION_TARGETS=""
 OPTION_DEBUG=no
 OPTION_IGNORE_AUDIO=no
 OPTION_NO_PREBUILTS=no
-OPTION_TRY_64=no
+OPTION_OUT_DIR=
 OPTION_HELP=no
 OPTION_STATIC=no
 OPTION_MINGW=no
 
-GLES_INCLUDE=
-GLES_LIBS=
+GLES_DIR=
 GLES_SUPPORT=no
 GLES_PROBE=yes
 
+PCBIOS_PROBE=yes
+
+QEMU_PREBUILTS_DIR=
+
 HOST_CC=${CC:-gcc}
 OPTION_CC=
-
-TARGET_ARCH=arm
 
 for opt do
   optarg=`expr "x$opt" : 'x[^=]*=\(.*\)'`
@@ -59,23 +60,24 @@ for opt do
   ;;
   --no-strip) OPTION_NO_STRIP=yes
   ;;
+  --out-dir=*) OPTION_OUT_DIR=$optarg
+  ;;
   --ignore-audio) OPTION_IGNORE_AUDIO=yes
   ;;
   --no-prebuilts) OPTION_NO_PREBUILTS=yes
   ;;
-  --try-64) OPTION_TRY_64=yes
-  ;;
   --static) OPTION_STATIC=yes
   ;;
-  --arch=*) TARGET_ARCH=$optarg
+  --gles-dir=*) GLES_DIR=$optarg
   ;;
-  --gles-include=*) GLES_INCLUDE=$optarg
-  GLES_SUPPORT=yes
-  ;;
-  --gles-libs=*) GLES_LIBS=$optarg
-  GLES_SUPPORT=yes
+  --qemu-prebuilts-dir=*) QEMU_PREBUILTS_DIR=$optarg
   ;;
   --no-gles) GLES_PROBE=no
+  ;;
+  --no-pcbios) PCBIOS_PROBE=no
+  ;;
+  --no-tests)
+  # Ignore this option, only used by android-rebuild.sh
   ;;
   *)
     echo "unknown option '$opt', use --help"
@@ -92,38 +94,53 @@ Usage: rebuild.sh [options]
 Options: [defaults in brackets after descriptions]
 EOF
     echo "Standard options:"
-    echo "  --help                   print this message"
-    echo "  --install=FILEPATH       copy emulator executable to FILEPATH [$TARGETS]"
-    echo "  --cc=PATH                specify C compiler [$HOST_CC]"
-    echo "  --arch=ARM               specify target architecture [$TARGET_ARCH]"
-    echo "  --sdl-config=FILE        use specific sdl-config script [$SDL_CONFIG]"
-    echo "  --no-strip               do not strip emulator executable"
-    echo "  --debug                  enable debug (-O0 -g) build"
-    echo "  --ignore-audio           ignore audio messages (may build sound-less emulator)"
-    echo "  --no-prebuilts           do not use prebuilt libraries and compiler"
-    echo "  --try-64                 try to build a 64-bit executable (may crash)"
-    echo "  --mingw                  build Windows executable on Linux"
-    echo "  --static                 build a completely static executable"
-    echo "  --verbose                verbose configuration"
-    echo "  --debug                  build debug version of the emulator"
-    echo "  --gles-include=PATH      specify path to GLES emulation headers"
-    echo "  --gles-libs=PATH         specify path to GLES emulation host libraries"
-    echo "  --no-gles                disable GLES emulation support"
+    echo "  --help                      Print this message"
+    echo "  --install=FILEPATH          Copy emulator executable to FILEPATH [$TARGETS]"
+    echo "  --cc=PATH                   Specify C compiler [$HOST_CC]"
+    echo "  --sdl-config=FILE           Use specific sdl-config script [$SDL_CONFIG]"
+    echo "  --no-strip                  Do not strip emulator executable"
+    echo "  --debug                     Enable debug (-O0 -g) build"
+    echo "  --ignore-audio              Ignore audio messages (may build sound-less emulator)"
+    echo "  --no-prebuilts              Do not use prebuilt libraries and compiler"
+    echo "  --out-dir=<path>            Use specific output directory [objs/]"
+    echo "  --mingw                     Build Windows executable on Linux"
+    echo "  --static                    Build a completely static executable"
+    echo "  --verbose                   Verbose configuration"
+    echo "  --debug                     Build debug version of the emulator"
+    echo "  --gles-dir=PATH             Specify path to GLES host emulation sources [auto-detected]"
+    echo "  --qemu-prebuilts-dir=PATH   Specify path to QEMU prebuilt binaries"
+    echo "  --no-gles                   Disable GLES emulation support"
+    echo "  --no-pcbios                 Disable copying of PC Bios files"
+    echo "  --no-tests                  Don't run unit test suite"
     echo ""
     exit 1
 fi
 
 # On Linux, try to use our prebuilt toolchain to generate binaries
-# that are compatible with Ubuntu 8.04
-if [ -z "$CC" -a -z "$OPTION_CC" -a "$HOST_OS" = linux ] ; then
-    HOST_CC=`dirname $0`/../../prebuilts/tools/gcc-sdk/gcc
-    if [ -f "$HOST_CC" ] ; then
-        echo "Using prebuilt toolchain: $HOST_CC"
-        CC="$HOST_CC"
+# that are compatible with Ubuntu 10.4
+if [ -z "$CC" -a -z "$OPTION_CC" ] ; then
+    PROBE_HOST_CC=
+    PROBE_HOST_CFLAGS=
+    if [ "$HOST_OS" = "linux" ] ; then
+        PREBUILTS_HOST_GCC=$(dirname $0)/../../prebuilts/gcc/linux-x86/host
+        PROBE_HOST_CC=$PREBUILTS_HOST_GCC/x86_64-linux-glibc2.11-4.8/bin/x86_64-linux-gcc
+        if [ ! -f "$PROBE_HOST_CC" ]; then
+            PROBE_HOST_CC=$PREBUILTS_HOST_GCC/x86_64-linux-glibc2.11-4.6/bin/x86_64-linux-gcc
+            if [ ! -f "$PROBE_HOST_CC" ] ; then
+                PROBE_HOST_CC=$(dirname $0)/../../prebuilts/tools/gcc-sdk/gcc
+            fi
+        fi
+    elif [ "$HOST_OS" = "darwin" ] ; then
+        PREBUILTS_HOST_GCC=$(dirname $0)/../../prebuilts/clang/darwin-x86/host
+        PROBE_HOST_CC=$PREBUILTS_HOST_GCC/3.5/bin/clang
+        PROBE_HOST_CFLAGS="-target x86_64-apple-darwin11.0.0"
+    fi
+    if [ -f "$PROBE_HOST_CC" ] ; then
+        echo "Using prebuilt toolchain: $PROBE_HOST_CC"
+        CC="$PROBE_HOST_CC $PROBE_HOST_CFLAGS"
     fi
 fi
 
-echo "OPTION_CC='$OPTION_CC'"
 if [ -n "$OPTION_CC" ]; then
     echo "Using specified C compiler: $OPTION_CC"
     CC="$OPTION_CC"
@@ -133,13 +150,9 @@ if [ -z "$CC" ]; then
   CC=$HOST_CC
 fi
 
-# we only support generating 32-bit binaris on 64-bit systems.
-# And we may need to add a -Wa,--32 to CFLAGS to let the assembler
-# generate 32-bit binaries on Linux x86_64.
-#
-if [ "$OPTION_TRY_64" != "yes" ] ; then
-    force_32bit_binaries
-fi
+# By default, generate 32-bit binaries, the Makefile have targets that
+# generate 64-bit ones by using -m64 on the command-line.
+force_32bit_binaries
 
 case $OS in
     linux-*)
@@ -153,12 +166,32 @@ case $OS in
 esac
 
 TARGET_OS=$OS
+
+setup_toolchain
+
+BUILD_AR=$AR
+BUILD_CC=$CC
+BUILD_CXX=$CC
+BUILD_LD=$LD
+BUILD_AR=$AR
+BUILD_CFLAGS=$CFLAGS
+BUILD_CXXFLAGS=$CXXFLAGS
+BUILD_LDFLAGS=$LDFLAGS
+
 if [ "$OPTION_MINGW" = "yes" ] ; then
     enable_linux_mingw
     TARGET_OS=windows
     TARGET_DLL_SUFFIX=.dll
 else
     enable_cygwin
+fi
+
+if [ "$OPTION_OUT_DIR" ]; then
+    OUT_DIR="$OPTION_OUT_DIR"
+    mkdir -p "$OUT_DIR" || panic "Could not create output directory: $OUT_DIR"
+else
+    OUT_DIR=objs
+    log "Auto-config: --out-dir=objs"
 fi
 
 # Are we running in the Android build system ?
@@ -175,18 +208,6 @@ if [ "$OPTION_NO_PREBUILTS" = "yes" ] ; then
     IN_ANDROID_BUILD=no
 fi
 
-# This is the list of static and shared host libraries we need to link
-# against in order to support OpenGLES emulation properly. Note that in
-# the case of a standalone build, we will find these libraries inside the
-# platform build tree and copy them into objs/lib/ automatically, unless
-# you use --gles-libs to point explicitely to a different directory.
-#
-if [ "$OPTION_TRY_64" != "yes" ] ; then
-    GLES_SHARED_LIBRARIES="libOpenglRender libGLES_CM_translator libGLES_V2_translator libEGL_translator"
-else
-    GLES_SHARED_LIBRARIES="lib64OpenglRender lib64GLES_CM_translator lib64GLES_V2_translator lib64EGL_translator"
-fi
-
 if [ "$IN_ANDROID_BUILD" = "yes" ] ; then
     locate_android_prebuilt
 
@@ -197,12 +218,6 @@ if [ "$IN_ANDROID_BUILD" = "yes" ] ; then
         CCACHE="$ANDROID_PREBUILT/ccache/ccache$EXE"
         if [ ! -f $CCACHE ] ; then
             CCACHE="$ANDROID_PREBUILTS/ccache/ccache$EXE"
-        fi
-        if [ -f $CCACHE ] ; then
-            CC="$CCACHE $CC"
-            log "Prebuilt   : CCACHE=$CCACHE"
-	else
-            log "Prebuilt   : CCACHE can't be found"
         fi
     fi
 
@@ -225,95 +240,96 @@ if [ "$IN_ANDROID_BUILD" = "yes" ] ; then
     else
         log "Tools      : Could not locate $TOOLS_PROPS !?"
     fi
-
-    # Try to find the GLES emulation headers and libraries automatically
-    if [ "$GLES_PROBE" = "yes" ]; then
-        GLES_SUPPORT=yes
-        if [ -z "$GLES_INCLUDE" ]; then
-            log "GLES       : Probing for headers"
-            GLES_INCLUDE=$ANDROID_TOP/sdk/emulator/opengl/host/include
-            if [ -d "$GLES_INCLUDE" ]; then
-                log "GLES       : Headers in $GLES_INCLUDE"
-            else
-                echo "Warning: Could not find OpenGLES emulation include dir: $GLES_INCLUDE"
-                echo "Disabling GLES emulation from this build!"
-                GLES_SUPPORT=no
-            fi
-        fi
-        if [ -z "$GLES_LIBS" ]; then
-            log "GLES       : Probing for host libraries"
-            GLES_LIBS=$(dirname "$HOST_BIN")/lib
-            if [ -d "$GLES_LIBS" ]; then
-                echo "GLES       : Libs in $GLES_LIBS"
-            else
-                echo "Warning: Could nof find OpenGLES emulation libraries in: $GLES_LIBS"
-                echo "Disabling GLES emulation from this build!"
-                GLES_SUPPORT=no
-            fi
-        fi
-    fi
 else
-    if [ "$GLES_PROBE" = "yes" ]; then
-        GLES_SUPPORT=yes
-        if [ -z "$GLES_INCLUDE" ]; then
-            log "GLES       : Probing for headers"
-            GLES_INCLUDE=../../sdk/emulator/opengl/host/include
-            if [ -d "$GLES_INCLUDE" ]; then
-                log "GLES       : Headers in $GLES_INCLUDE"
-            else
-                echo "Warning: Could not find OpenGLES emulation include dir: $GLES_INCLUDE"
-                echo "Disabling GLES emulation from this build!"
-                GLES_SUPPORT=no
-            fi
-        fi
-        if [ -z "$GLES_LIBS" ]; then
-            log "GLES       : Probing for host libraries"
-            GLES_LIBS=../../out/host/$OS/lib
-            if [ -d "$GLES_LIBS" ]; then
-                echo "GLES       : Libs in $GLES_LIBS"
-            else
-                echo "Warning: Could nof find OpenGLES emulation libraries in: $GLES_LIBS"
-                echo "Disabling GLES emulation from this build!"
-                GLES_SUPPORT=no
-            fi
-        fi
+    if [ "$USE_CCACHE" != 0 ]; then
+        CCACHE=$(which ccache 2>/dev/null)
     fi
 fi  # IN_ANDROID_BUILD = no
 
-if [ "$GLES_SUPPORT" = "yes" ]; then
-    if [ -z "$GLES_INCLUDE" -o -z "$GLES_LIBS" ]; then
-        echo "ERROR: You must use both --gles-include and --gles-libs at the same time!"
-        echo "       Or use --no-gles to disable its support from this build."
-        exit 1
+if [ -n "$CCACHE" -a -f "$CCACHE" ]; then
+    if [ "$HOST_OS" == "darwin" -a "$OPTION_DEBUG" == "yes" ]; then
+        # http://llvm.org/bugs/show_bug.cgi?id=20297
+        # ccache works for mingw/gdb, therefore probably works for gcc/gdb
+        log "Prebuilt   : CCACHE disabled for OSX debug builds"
+        CCACHE=
+    else
+        CC="$CCACHE $CC"
+        log "Prebuilt   : CCACHE=$CCACHE"
     fi
+else
+    log "Prebuilt   : CCACHE can't be found"
+    CCACHE=
+fi
 
-    GLES_HEADER=$GLES_INCLUDE/libOpenglRender/render_api.h
-    if [ ! -f "$GLES_HEADER" ]; then
-        echo "ERROR: Missing OpenGLES emulation header file: $GLES_HEADER"
-        echo "Please fix this by using --gles-include to point to the right directory!"
-        exit 1
-    fi
-
-    mkdir -p objs/lib
-
-    for lib in $GLES_SHARED_LIBRARIES; do
-        GLES_LIB=$GLES_LIBS/${lib}$TARGET_DLL_SUFFIX
-        if [ ! -f "$GLES_LIB" ]; then
-            echo "ERROR: Missing OpenGLES emulation host library: $GLES_LIB"
-            echo "Please fix this by using --gles-libs to point to the right directory!"
-            if [ "$IN_ANDROID_BUILD" = "true" ]; then
-                echo "You might also be missing the library because you forgot to rebuild the whole platform!"
+# Try to find the GLES emulation headers and libraries automatically
+if [ "$GLES_PROBE" = "yes" ]; then
+    GLES_SUPPORT=yes
+    if [ -z "$GLES_DIR" ]; then
+        GLES_DIR=../../sdk/emulator/opengl
+        log2 "GLES       : Probing source dir: $GLES_DIR"
+        if [ ! -d "$GLES_DIR" ]; then
+            GLES_DIR=../opengl
+            log2 "GLES       : Probing source dir: $GLES_DIR"
+            if [ ! -d "$GLES_DIR" ]; then
+                GLES_DIR=
             fi
-            exit 1
         fi
-        cp $GLES_LIB objs/lib
-        if [ $? != 0 ]; then
-            echo "ERROR: Could not find required OpenGLES emulation library: $GLES_LIB"
-            exit 1
+        if [ -z "$GLES_DIR" ]; then
+            echo "GLES       : Could not find GPU emulation sources!"
+            GLES_SUPPORT=no
         else
-            log "GLES       : Copying $GLES_LIB"
+            echo "GLES       : Found GPU emulation sources: $GLES_DIR"
+            GLES_SUPPORT=yes
         fi
-    done
+    fi
+fi
+
+if [ "$PCBIOS_PROBE" = "yes" ]; then
+    PCBIOS_DIR=$(dirname "$0")/../../prebuilts/qemu-kernel/x86/pc-bios
+    if [ ! -d "$PCBIOS_DIR" ]; then
+        log2 "PC Bios    : Probing $PCBIOS_DIR (missing)"
+        PCBIOS_DIR=../pc-bios
+    fi
+    log2 "PC Bios    : Probing $PCBIOS_DIR"
+    if [ ! -d "$PCBIOS_DIR" ]; then
+        log "PC Bios    : Could not find prebuilts directory."
+    else
+        mkdir -p $OUT_DIR/lib/pc-bios
+        for BIOS_FILE in bios.bin vgabios-cirrus.bin; do
+            log "PC Bios    : Copying $BIOS_FILE"
+            cp -f $PCBIOS_DIR/$BIOS_FILE $OUT_DIR/lib/pc-bios/$BIOS_FILE
+        done
+    fi
+fi
+
+# For OS X, detect the location of the SDK to use.
+if [ "$HOST_OS" = darwin ]; then
+    OSX_VERSION=$(sw_vers -productVersion)
+    OSX_SDK_SUPPORTED="10.6 10.7 10.8"
+    OSX_SDK_INSTALLED_LIST=$(xcodebuild -showsdks 2>/dev/null | grep macosx | sed -e "s/.*macosx//g" | sort -n)
+    if [ -z "$OSX_SDK_INSTALLED_LIST" ]; then
+        echo "ERROR: Please install XCode on this machine!"
+        exit 1
+    fi
+    log "OSX: Installed SDKs: $OSX_SDK_INSTALLED_LIST"
+
+    OSX_SDK_VERSION=$(echo "$OSX_SDK_INSTALLED_LIST" | tr ' ' '\n' | head -1)
+    log "OSX: Using SDK version $OSX_SDK_VERSION"
+
+    XCODE_PATH=$(xcode-select -print-path 2>/dev/null)
+    log "OSX: XCode path: $XCODE_PATH"
+
+    OSX_SDK_ROOT=$XCODE_PATH/Platforms/MacOSX.platform/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
+    log "OSX: Looking for $OSX_SDK_ROOT"
+    if [ ! -d "$OSX_SDK_ROOT" ]; then
+        OSX_SDK_ROOT=/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
+        log "OSX: Looking for $OSX_SDK_ROOT"
+        if [ ! -d "$OSX_SDK_ROOT" ]; then
+            echo "ERROR: Could not find SDK $OSX_SDK_VERSION at $OSX_SDK_ROOT"
+            exit 1
+        fi
+    fi
+    echo "OSX SDK   : Found at $OSX_SDK_ROOT"
 fi
 
 # we can build the emulator with Cygwin, so enable it
@@ -333,7 +349,7 @@ if [ -n "$SDL_CONFIG" ] ; then
 	SDL_LIBS=`$SDL_CONFIG --static-libs`
 
 	# quick hack, remove the -D_GNU_SOURCE=1 of some SDL Cflags
-7	# since they break recent Mingw releases
+	# since they break recent Mingw releases
 	SDL_CFLAGS=`echo $SDL_CFLAGS | sed -e s/-D_GNU_SOURCE=1//g`
 
 	log "SDL-probe  : SDL_CFLAGS = $SDL_CFLAGS"
@@ -452,13 +468,15 @@ probe_system_library ()
             if [ "$OPTION_IGNORE_AUDIO" = no ] ; then
                 echo "The $2 development files do not seem to be installed on this system"
                 echo "Are you missing the $4 package ?"
-                echo "Correct the errors below and try again:"
+                echo "You can ignore this error with --ignore-audio, otherwise correct"
+                echo "the issue(s) below and try again:"
                 cat $TMPL
                 clean_exit
             fi
             eval $1=no
             log "AudioProbe : $2 seems to be UNUSABLE on this system !!"
         fi
+        clean_temp
     fi
 }
 
@@ -472,7 +490,7 @@ LDFLAGS=$ORG_LDFLAGS
 # create the objs directory that is going to contain all generated files
 # including the configuration ones
 #
-mkdir -p objs
+mkdir -p $OUT_DIR
 
 ###
 ###  Compiler probe
@@ -483,7 +501,7 @@ mkdir -p objs
 ####
 
 # because the previous version could be read-only
-rm -f $TMPC
+clean_temp
 
 # check host endianess
 #
@@ -499,53 +517,86 @@ EOF
 feature_run_exec HOST_BIGENDIAN
 fi
 
-# check size of host long bits
-HOST_LONGBITS=32
-if [ "$TARGET_OS" = "$OS" ] ; then
-cat > $TMPC << EOF
-int main(void) {
-        return sizeof(void*)*8;
-}
-EOF
-feature_run_exec HOST_LONGBITS
-fi
-
 # check whether we have <byteswap.h>
 #
 feature_check_header HAVE_BYTESWAP_H      "<byteswap.h>"
 feature_check_header HAVE_MACHINE_BSWAP_H "<machine/bswap.h>"
 feature_check_header HAVE_FNMATCH_H       "<fnmatch.h>"
 
+# check for Mingw version.
+MINGW_VERSION=
+if [ "$TARGET_OS" = "windows" ]; then
+log "Mingw      : Probing for GCC version."
+GCC_VERSION=$($CC -v 2>&1 | awk '$1 == "gcc" && $2 == "version" { print $3; }')
+GCC_MAJOR=$(echo "$GCC_VERSION" | cut -f1 -d.)
+GCC_MINOR=$(echo "$GCC_VERSION" | cut -f2 -d.)
+log "Mingw      : Found GCC version $GCC_MAJOR.$GCC_MINOR [$GCC_VERSION]"
+MINGW_GCC_VERSION=$(( $GCC_MAJOR * 100 + $GCC_MINOR ))
+fi
 # Build the config.make file
 #
+
+case $OS in
+    windows)
+        HOST_EXEEXT=.exe
+        HOST_DLLEXT=.dll
+        ;;
+    darwin)
+        HOST_EXEEXT=
+        HOST_DLLEXT=.dylib
+        ;;
+    *)
+        HOST_EXEEXT=
+        HOST_DLLEXT=
+        ;;
+esac
 
 case $TARGET_OS in
     windows)
         TARGET_EXEEXT=.exe
+        TARGET_DLLEXT=.dll
+        ;;
+    darwin)
+        TARGET_EXEXT=
+        TARGET_DLLEXT=.dylib
         ;;
     *)
         TARGET_EXEEXT=
+        TARGET_DLLEXT=.so
         ;;
 esac
 
-create_config_mk
+# Strip executables and shared libraries unless --debug is used.
+if [ "$OPTION_DEBUG" != "yes" -a "$OPTION_NO_STRIP" != "yes" ]; then
+    case $HOST_OS in
+        darwin)
+            LDFLAGS="$LDFLAGS -Wl,-S"
+            ;;
+        *)
+            LDFLAGS="$LDFLAGS -Wl,--strip-all"
+            ;;
+    esac
+fi
+
+create_config_mk "$OUT_DIR"
 echo "" >> $config_mk
-if [ $TARGET_ARCH = arm ] ; then
-echo "TARGET_ARCH       := arm" >> $config_mk
-fi
-
-if [ $TARGET_ARCH = x86 ] ; then
-echo "TARGET_ARCH       := x86" >> $config_mk
-fi
-
-if [ $TARGET_ARCH = mips ] ; then
-echo "TARGET_ARCH       := mips" >> $config_mk
-fi
-
 echo "HOST_PREBUILT_TAG := $TARGET_OS" >> $config_mk
 echo "HOST_EXEEXT       := $TARGET_EXEEXT" >> $config_mk
+echo "HOST_DLLEXT       := $TARGET_DLLEXT" >> $config_mk
 echo "PREBUILT          := $ANDROID_PREBUILT" >> $config_mk
 echo "PREBUILTS         := $ANDROID_PREBUILTS" >> $config_mk
+
+echo "" >> $config_mk
+echo "BUILD_OS          := $HOST_OS" >> $config_mk
+echo "BUILD_ARCH        := $HOST_ARCH" >> $config_mk
+echo "BUILD_EXEEXT      := $HOST_EXEEXT" >> $config_mk
+echo "BUILD_DLLEXT      := $HOST_DLLEXT" >> $config_mk
+echo "BUILD_AR          := $BUILD_AR" >> $config_mk
+echo "BUILD_CC          := $BUILD_CC" >> $config_mk
+echo "BUILD_CXX         := $BUILD_CXX" >> $config_mk
+echo "BUILD_LD          := $BUILD_LD" >> $config_mk
+echo "BUILD_CFLAGS      := $BUILD_CFLAGS" >> $config_mk
+echo "BUILD_LDFLAGS     := $BUILD_LDFLAGS" >> $config_mk
 
 PWD=`pwd`
 echo "SRC_PATH          := $PWD" >> $config_mk
@@ -565,6 +616,10 @@ fi
 if [ $OPTION_STATIC = yes ] ; then
     echo "CONFIG_STATIC_EXECUTABLE := true" >> $config_mk
 fi
+if [ "$GLES_SUPPORT" = "yes" ]; then
+    echo "EMULATOR_BUILD_EMUGL       := true" >> $config_mk
+    echo "EMULATOR_EMUGL_SOURCES_DIR := $GLES_DIR" >> $config_mk
+fi
 
 if [ -n "$ANDROID_SDK_TOOLS_REVISION" ] ; then
     echo "ANDROID_SDK_TOOLS_REVISION := $ANDROID_SDK_TOOLS_REVISION" >> $config_mk
@@ -574,19 +629,24 @@ if [ "$OPTION_MINGW" = "yes" ] ; then
     echo "" >> $config_mk
     echo "USE_MINGW := 1" >> $config_mk
     echo "HOST_OS   := windows" >> $config_mk
+    echo "HOST_MINGW_VERSION := $MINGW_GCC_VERSION" >> $config_mk
 fi
 
-if [ "$GLES_INCLUDE" -a "$GLES_LIBS" ]; then
-    echo "QEMU_OPENGLES_INCLUDE    := $GLES_INCLUDE" >> $config_mk
-    echo "QEMU_OPENGLES_LIBS       := $GLES_LIBS"    >> $config_mk
+if [ "$HOST_OS" = "darwin" ]; then
+    echo "mac_sdk_root := $OSX_SDK_ROOT" >> $config_mk
+    echo "mac_sdk_version := $OSX_SDK_VERSION" >> $config_mk
 fi
 
 # Build the config-host.h file
 #
-config_h=objs/config-host.h
-echo "/* This file was autogenerated by '$PROGNAME' */" > $config_h
-echo "#define CONFIG_QEMU_SHAREDIR   \"/usr/local/share/qemu\"" >> $config_h
-echo "#define HOST_LONG_BITS  $HOST_LONGBITS" >> $config_h
+config_h=$OUT_DIR/config-host.h
+cat > $config_h <<EOF
+/* This file was autogenerated by '$PROGNAME' */
+
+#define CONFIG_QEMU_SHAREDIR   "/usr/local/share/qemu"
+
+EOF
+
 if [ "$HAVE_BYTESWAP_H" = "yes" ] ; then
   echo "#define CONFIG_BYTESWAP_H 1" >> $config_h
 fi
@@ -645,7 +705,6 @@ case "$CPU" in
     *) CONFIG_CPU=$CPU
     ;;
 esac
-echo "#define HOST_$CONFIG_CPU    1" >> $config_h
 if [ "$HOST_BIGENDIAN" = "1" ] ; then
   echo "#define HOST_WORDS_BIGENDIAN 1" >> $config_h
 fi
@@ -682,12 +741,36 @@ if [ $BSD = 1 ] ; then
     echo "#define MAP_ANONYMOUS    MAP_ANON" >> $config_h
 fi
 
+case "$TARGET_OS" in
+    linux-*)
+        echo "#define CONFIG_SIGNALFD       1" >> $config_h
+        ;;
+esac
+
 echo "#define CONFIG_ANDROID       1" >> $config_h
 
-if [ "$GLES_INCLUDE" -a "$GLES_LIBS" ]; then
-    echo "#define CONFIG_ANDROID_OPENGLES 1" >> $config_h
+log "Generate   : $config_h"
+
+# Generate the QAPI headers and sources from qapi-schema.json
+# Ideally, this would be done in our Makefiles, but as far as I
+# understand, the platform build doesn't support a single tool
+# that generates several sources files, nor the standalone one.
+export PYTHONDONTWRITEBYTECODE=1
+AUTOGENERATED_DIR=qapi-auto-generated
+python scripts/qapi-types.py qapi.types --output-dir=$AUTOGENERATED_DIR -b < qapi-schema.json
+python scripts/qapi-visit.py --output-dir=$AUTOGENERATED_DIR -b < qapi-schema.json
+python scripts/qapi-commands.py --output-dir=$AUTOGENERATED_DIR -m < qapi-schema.json
+log "Generate   : $AUTOGENERATED_DIR"
+
+if [ "$QEMU_PREBUILTS_DIR" ]; then
+    if [ ! -d "$QEMU_PREBUILTS_DIR/binaries" ]; then
+        panic "Missing QEMU prebuilts directory: $QEMU_PREBUILTS_DIR/binaries"
+    fi
+    log "Copying QEMU prebuilt binaries to: $OUT_DIR/qemu"
+    mkdir -p "$OUT_DIR"/qemu || panic "Could not create $OUT_DIR/qemu"
+    cp -rp "$QEMU_PREBUILTS_DIR/binaries"/* "$OUT_DIR/qemu"
 fi
 
-log "Generate   : $config_h"
+clean_temp
 
 echo "Ready to go. Type 'make' to build emulator"

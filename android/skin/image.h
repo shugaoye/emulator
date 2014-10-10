@@ -12,9 +12,9 @@
 #ifndef _ANDROID_SKIN_IMAGE_H
 #define _ANDROID_SKIN_IMAGE_H
 
-#include "android/android.h"
-#include <SDL.h>
 #include "android/skin/rect.h"
+
+#include <SDL.h>
 
 /* helper functions */
 
@@ -30,9 +30,9 @@ typedef struct SkinImage   SkinImage;
 
 /* a descriptor for a given skin image */
 typedef struct SkinImageDesc {
-    const char*      path;      /* image file path (must be .png) */
-    AndroidRotation  rotation;  /* rotation */
-    int              blend;     /* blending, 0..256 value */
+    const char*   path;      /* image file path (must be .png) */
+    SkinRotation  rotation;  /* rotation */
+    int           blend;     /* blending, 0..256 value */
 } SkinImageDesc;
 
 #define  SKIN_BLEND_NONE   0

@@ -15,7 +15,7 @@
 #define _HAX_I386_H
 
 #include "android/utils/debug.h"
-#include "hax.h"
+#include "exec/hax.h"
 
 #ifdef CONFIG_DARWIN
 typedef int hax_fd;
@@ -55,18 +55,18 @@ struct hax_vm
 };
 
 /* Functions exported to host specific mode */
-hax_fd hax_vcpu_get_fd(CPUState *env);
+hax_fd hax_vcpu_get_fd(CPUState *cpu);
 int valid_hax_tunnel_size(uint16_t size);
 
 /* Host specific functions */
 int hax_mod_version(struct hax_state *hax, struct hax_module_version *version);
-int hax_inject_interrupt(CPUState *env, int vector);
+int hax_inject_interrupt(CPUState *cpu, int vector);
 struct hax_vm *hax_vm_create(struct hax_state *hax);
 int hax_vcpu_run(struct hax_vcpu_state *vcpu);
 int hax_vcpu_create(int id);
-int hax_sync_vcpu_state(CPUState *env, struct vcpu_state_t *state, int set);
-int hax_sync_msr(CPUState *env, struct hax_msr_data *msrs, int set);
-int hax_sync_fpu(CPUState *env, struct fx_layout *fl, int set);
+int hax_sync_vcpu_state(CPUState *cpu, struct vcpu_state_t *state, int set);
+int hax_sync_msr(CPUState *cpu, struct hax_msr_data *msrs, int set);
+int hax_sync_fpu(CPUState *cpu, struct fx_layout *fl, int set);
 int hax_vm_destroy(struct hax_vm *vm);
 int hax_capability(struct hax_state *hax, struct hax_capabilityinfo *cap);
 int hax_notify_qemu_version(hax_fd vm_fd, struct hax_qemu_version *qversion);

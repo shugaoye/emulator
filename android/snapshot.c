@@ -33,8 +33,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "bswap.h"
+#include "qemu/bswap.h"
 #include "android/utils/debug.h"
+#include "android/utils/eintr_wrapper.h"
 #include "android/utils/system.h"
 #include "android/snapshot.h"
 
@@ -50,17 +51,11 @@
 static int
 read_or_die(int fd, void *buf, size_t nbyte)
 {
-    int ret = 0;
-    do {
-        ret = read(fd, buf, nbyte);
-    }
-    while(ret < 0 && errno == EINTR);
-
+    int ret = HANDLE_EINTR(read(fd, buf, nbyte));
     if (ret < 0) {
         derror("read failed: %s", strerror(errno));
         exit(1);
     }
-
     return ret;
 }
 
@@ -201,7 +196,11 @@ snapshot_format_create_date( char *buf, size_t buf_size, time_t *time )
 {
     struct tm *tm;
     tm = localtime(time);
-    strftime(buf, buf_size, "%Y-%m-%d %H:%M:%S", tm);
+    if (!tm) {
+        snprintf(buf, buf_size, "<invalid-snapshot-date>");
+    } else {
+        strftime(buf, buf_size, "%Y-%m-%d %H:%M:%S", tm);
+    }
     return buf;
 }
 
@@ -225,9 +224,11 @@ snapshot_info_print( SnapshotInfo *info )
     char date_buf[21];
     char clock_buf[21];
 
+    // Note: time_t might be larger than uint32_t.
+    time_t date_sec = info->date_sec;
+
     snapshot_format_size(size_buf, sizeof(size_buf), info->vm_state_size);
-    snapshot_format_create_date(date_buf, sizeof(date_buf),
-                                (time_t*) &info->date_sec);
+    snapshot_format_create_date(date_buf, sizeof(date_buf), &date_sec);
     snapshot_format_vm_clock(clock_buf, sizeof(clock_buf), info->vm_clock_nsec);
 
     printf(" %-10s%-20s%7s%20s%15s\n",
@@ -246,7 +247,7 @@ snapshot_print_table( int fd, uint32_t nb_snapshots, uint64_t snapshots_offset )
     seek_or_die(fd, snapshots_offset, SEEK_SET);
 
     /* iterate over snapshot records */
-    int i;
+    uint32_t i;
     for (i = 0; i < nb_snapshots; i++) {
         SnapshotInfo *info = snapshot_info_alloc();
         snapshot_info_read(fd, info);

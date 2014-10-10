@@ -42,7 +42,6 @@ include $(BUILD_SYSTEM)/definitions.make
 
 VPATH := $(OBJS_DIR)
 VPATH += :$(SRC_PATH)/android/config
-VPATH += :$(SRC_PATH):$(SRC_PATH)/target-$(TARGET_ARCH)
 
 .PHONY: all libraries executables clean clean-config clean-objs-dir \
         clean-executables clean-libraries
@@ -50,6 +49,7 @@ VPATH += :$(SRC_PATH):$(SRC_PATH)/target-$(TARGET_ARCH)
 CLEAR_VARS                := $(BUILD_SYSTEM)/clear_vars.make
 BUILD_HOST_EXECUTABLE     := $(BUILD_SYSTEM)/host_executable.make
 BUILD_HOST_STATIC_LIBRARY := $(BUILD_SYSTEM)/host_static_library.make
+BUILD_HOST_SHARED_LIBRARY := $(BUILD_SYSTEM)/host_shared_library.make
 
 DEPENDENCY_DIRS :=
 

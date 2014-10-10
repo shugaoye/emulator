@@ -14,9 +14,14 @@
 
 #include <string.h>
 #include <stdint.h>
+#ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS 1
+#endif
 #include <inttypes.h>  /* for PRId64 et al. */
 #include "android/utils/assert.h"
+#include "android/utils/compiler.h"
+
+ANDROID_BEGIN_HEADER
 
 /* internal helpers */
 void*  _android_array_alloc( size_t  itemSize, size_t  count );
@@ -100,23 +105,10 @@ typedef int  ABool;
 extern char*  win32_strsep(char**  pline, const char*  delim);
 #endif
 
-/** Handle strcasecmp on Windows
+/** Handle strcasecmp on Windows (and older Mingw32 toolchain)
  **/
-#ifdef _WIN32
+#if defined(_WIN32) && !ANDROID_GCC_PREREQ(4,4)
 #  define  strcasecmp  stricmp
-#endif
-
-/** EINTR HANDLING
- **
- ** since QEMU uses SIGALRM pretty extensively, having a system call returning
- ** EINTR on Unix happens very frequently. provide a simple macro to guard against
- ** this.
- **/
-
-#ifdef _WIN32
-#  define   CHECKED(ret, call)    (ret) = (call)
-#else
-#  define   CHECKED(ret, call)    do { (ret) = (call); } while ((ret) < 0 && errno == EINTR)
 #endif
 
 /** SIGNAL HANDLING
@@ -179,5 +171,7 @@ extern  void   sleep_ms( int  timeout );
 #endif
 
 /* */
+
+ANDROID_END_HEADER
 
 #endif /* _ANDROID_UTILS_SYSTEM_H */

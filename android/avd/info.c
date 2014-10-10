@@ -13,7 +13,9 @@
 #include "android/avd/util.h"
 #include "android/avd/keys.h"
 #include "android/config/config.h"
+#include "android/utils/file_data.h"
 #include "android/utils/path.h"
+#include "android/utils/property_file.h"
 #include "android/utils/bufprint.h"
 #include "android/utils/filelock.h"
 #include "android/utils/tempfile.h"
@@ -103,6 +105,7 @@ struct AvdInfo {
     char*     androidOut;
     char*     androidBuildRoot;
     char*     targetArch;
+    char*     targetAbi;
 
     /* for the normal virtual device case */
     char*     deviceName;
@@ -120,6 +123,9 @@ struct AvdInfo {
     char*     skinName;     /* skin name */
     char*     skinDirPath;  /* skin directory */
     char*     coreHardwareIniPath;  /* core hardware.ini path */
+
+    FileData  buildProperties[1];  /* build.prop file */
+    FileData  bootProperties[1];   /* boot.prop file */
 
     /* image files */
     char*     imagePath [ AVD_IMAGE_MAX ];
@@ -139,6 +145,9 @@ avdInfo_free( AvdInfo*  i )
         AFREE(i->skinName);
         AFREE(i->skinDirPath);
         AFREE(i->coreHardwareIniPath);
+
+        fileData_done(i->buildProperties);
+        fileData_done(i->bootProperties);
 
         for (nn = 0; nn < i->numSearchPaths; nn++)
             AFREE(i->searchPaths[nn]);
@@ -162,6 +171,8 @@ avdInfo_free( AvdInfo*  i )
 
         AFREE(i->contentPath);
         AFREE(i->sdkRootPath);
+        AFREE(i->targetArch);
+        AFREE(i->targetAbi);
 
         if (i->inAndroidBuild) {
             AFREE(i->androidOut);
@@ -176,13 +187,6 @@ avdInfo_free( AvdInfo*  i )
 /* list of default file names for each supported image file type */
 static const char*  const  _imageFileNames[ AVD_IMAGE_MAX ] = {
 #define  _AVD_IMG(x,y,z)  y,
-    AVD_IMAGE_LIST
-#undef _AVD_IMG
-};
-
-/* list of short text description for each supported image file type */
-static const char*  const _imageFileText[ AVD_IMAGE_MAX ] = {
-#define  _AVD_IMG(x,y,z)  z,
     AVD_IMAGE_LIST
 #undef _AVD_IMG
 };
@@ -546,6 +550,12 @@ NOT_A_NUMBER:
     goto EXIT;
 }
 
+
+int
+avdInfo_getApiLevel(AvdInfo* i) {
+    return i->apiLevel;
+}
+
 /* Look for a named file inside the AVD's content directory.
  * Returns NULL if it doesn't exist, or a strdup() copy otherwise.
  */
@@ -696,6 +706,63 @@ _avdInfo_getCoreHwIniPath( AvdInfo* i, const char* basePath )
     return 0;
 }
 
+
+static void
+_avdInfo_readPropertyFile(AvdInfo* i,
+                          const char* filePath,
+                          FileData* data) {
+    int ret = fileData_initFromFile(data, filePath);
+    if (ret < 0) {
+        D("Error reading property file %s: %s", filePath, strerror(-ret));
+    } else {
+        D("Read property file at %s", filePath);
+    }
+}
+
+
+static void
+_avdInfo_extractBuildProperties(AvdInfo* i) {
+    i->targetArch = propertyFile_getTargetArch(i->buildProperties);
+    if (!i->targetArch) {
+        i->targetArch = ASTRDUP("arm");
+        D("Cannot find target CPU architecture, defaulting to '%s'",
+          i->targetArch);
+    }
+    i->targetAbi = propertyFile_getTargetAbi(i->buildProperties);
+    if (!i->targetAbi) {
+        i->targetAbi = ASTRDUP("armeabi");
+        D("Cannot find target CPU ABI, defaulting to '%s'",
+          i->targetAbi);
+    }
+    if (!i->apiLevel) {
+        // Note: for regular AVDs, the API level is already extracted
+        // from config.ini, besides, for older SDK platform images,
+        // there is no build.prop file and the following function
+        // would always return 1000, making the AVD unbootable!.
+        i->apiLevel = propertyFile_getApiLevel(i->buildProperties);
+        if (i->apiLevel < 3) {
+            i->apiLevel = 3;
+            D("Cannot find target API level, defaulting to %d",
+            i->apiLevel);
+        }
+    }
+}
+
+
+static void
+_avdInfo_getPropertyFile(AvdInfo* i,
+                         const char* propFileName,
+                         FileData* data ) {
+    char* filePath = _avdInfo_getContentOrSdkFilePath(i, propFileName);
+    if (!filePath) {
+        D("No %s property file found.", propFileName);
+        return;
+    }
+
+    _avdInfo_readPropertyFile(i, filePath, data);
+    free(filePath);
+}
+
 AvdInfo*
 avdInfo_new( const char*  name, AvdInfoParams*  params )
 {
@@ -725,6 +792,12 @@ avdInfo_new( const char*  name, AvdInfoParams*  params )
      * obsolete SDKs.
      */
     _avdInfo_getSearchPaths(i);
+
+    // Find the build.prop and boot.prop files and read them.
+    _avdInfo_getPropertyFile(i, "build.prop", i->buildProperties);
+    _avdInfo_getPropertyFile(i, "boot.prop", i->bootProperties);
+
+    _avdInfo_extractBuildProperties(i);
 
     /* don't need this anymore */
     iniFile_free(i->rootIni);
@@ -813,16 +886,29 @@ avdInfo_newForAndroidBuild( const char*     androidBuildRoot,
     i->androidBuildRoot = ASTRDUP(androidBuildRoot);
     i->androidOut       = ASTRDUP(androidOut);
     i->contentPath      = ASTRDUP(androidOut);
-    i->targetArch       = path_getBuildTargetArch(i->androidOut);
-    i->apiLevel         = path_getBuildTargetApiLevel(i->androidOut);
 
-    /* TODO: find a way to provide better information from the build files */
+    // Find the build.prop file and read it.
+    char* buildPropPath = path_getBuildBuildProp(i->androidOut);
+    if (buildPropPath) {
+        _avdInfo_readPropertyFile(i, buildPropPath, i->buildProperties);
+        free(buildPropPath);
+    }
+
+    // FInd the boot.prop file and read it.
+    char* bootPropPath = path_getBuildBootProp(i->androidOut);
+    if (bootPropPath) {
+        _avdInfo_readPropertyFile(i, bootPropPath, i->bootProperties);
+        free(bootPropPath);
+    }
+
+    _avdInfo_extractBuildProperties(i);
+
     i->deviceName = ASTRDUP("<build>");
 
-    /* There is no config.ini in the build */
-    i->configIni = NULL;
-
-    if (_avdInfo_getCoreHwIniPath(i, i->androidOut) < 0 )
+    /* out/target/product/<name>/config.ini, if exists, provide configuration
+     * from build files. */
+    if (_avdInfo_getConfigIni(i) < 0 ||
+        _avdInfo_getCoreHwIniPath(i, i->androidOut) < 0)
         goto FAIL;
 
     /* Read the build skin's hardware.ini, if any */
@@ -881,22 +967,28 @@ avdInfo_getKernelPath( AvdInfo*  i )
 
     char*  kernelPath = _avdInfo_getContentOrSdkFilePath(i, imageName);
 
-    if (kernelPath == NULL && i->inAndroidBuild) {
+    do {
+        if (kernelPath || !i->inAndroidBuild)
+            break;
+
         /* When in the Android build, look into the prebuilt directory
          * for our target architecture.
          */
         char temp[PATH_MAX], *p = temp, *end = p + sizeof(temp);
         const char* suffix = "";
-        char* abi;
 
-        /* If the target ABI is armeabi-v7a, then look for
-         * kernel-qemu-armv7 instead of kernel-qemu in the prebuilt
-         * directory. */
-        abi = path_getBuildTargetAbi(i->androidOut);
-        if (!strcmp(abi,"armeabi-v7a")) {
+        // If the target ABI is armeabi-v7a, then look for
+        // kernel-qemu-armv7 instead of kernel-qemu in the prebuilt
+        // directory.
+        if (!strcmp(i->targetAbi, "armeabi-v7a")) {
             suffix = "-armv7";
         }
-        AFREE(abi);
+
+        p = bufprint(temp, end, "%s/kernel", i->androidOut);
+        if (p < end && path_exists(temp)) {
+            kernelPath = ASTRDUP(temp);
+            break;
+        }
 
         p = bufprint(temp, end, "%s/prebuilts/qemu-kernel/%s/kernel-qemu%s",
                      i->androidBuildRoot, i->targetArch, suffix);
@@ -905,7 +997,9 @@ avdInfo_getKernelPath( AvdInfo*  i )
             exit(1);
         }
         kernelPath = ASTRDUP(temp);
-    }
+
+    } while (0);
+
     return kernelPath;
 }
 
@@ -1035,13 +1129,15 @@ avdInfo_inAndroidBuild( AvdInfo*  i )
 }
 
 char*
+avdInfo_getTargetCpuArch(AvdInfo* i) {
+    return ASTRDUP(i->targetArch);
+}
+
+char*
 avdInfo_getTargetAbi( AvdInfo* i )
 {
     /* For now, we can't get the ABI from SDK AVDs */
-    if (!i->inAndroidBuild)
-        return NULL;
-
-    return path_getBuildTargetAbi(i->androidOut);
+    return ASTRDUP(i->targetAbi);
 }
 
 char*
@@ -1193,6 +1289,23 @@ avdInfo_shouldUseDynamicSkin( AvdInfo* i)
 }
 
 char*
+avdInfo_getDynamicSkinPath( AvdInfo* i)
+{
+    char tmp[PATH_MAX];
+
+    if (i->inAndroidBuild) {
+        snprintf(tmp, sizeof(tmp), "%s/sdk/emulator/skins/dynamic/", i->androidBuildRoot);
+    } else {
+        snprintf(tmp, sizeof(tmp), "%s/tools/lib/emulator/skins/dynamic/", i->sdkRootPath);
+    }
+
+    if (!path_exists(tmp))
+        return NULL;
+
+    return ASTRDUP(tmp);
+}
+
+char*
 avdInfo_getCharmapFile( AvdInfo* i, const char* charmapName )
 {
     char        fileNameBuff[PATH_MAX];
@@ -1213,7 +1326,13 @@ avdInfo_getCharmapFile( AvdInfo* i, const char* charmapName )
 
 int avdInfo_getAdbdCommunicationMode( AvdInfo* i )
 {
-    return path_getAdbdCommunicationMode(i->androidOut);
+    if (i->apiLevel < 16) {
+        // QEMU pipe for ADB communication was added in android-4.1.1_r1 API 16
+        D("API < 16, forcing ro.adb.qemud==0");
+        return 0;
+    }
+
+    return propertyFile_getAdbdCommunicationMode(i->buildProperties);
 }
 
 int avdInfo_getSnapshotPresent(AvdInfo* i)
@@ -1223,4 +1342,8 @@ int avdInfo_getSnapshotPresent(AvdInfo* i)
     } else {
         return iniFile_getBoolean(i->configIni, "snapshot.present", "no");
     }
+}
+
+const FileData* avdInfo_getBootProperties(AvdInfo* i) {
+    return i->bootProperties;
 }

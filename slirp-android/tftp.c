@@ -108,7 +108,7 @@ static int tftp_read_data(struct tftp_session *spt, u_int16_t block_nr,
 
   n = snprintf(buffer, sizeof(buffer), "%s/%s",
 	       tftp_prefix, spt->filename);
-  if (n >= sizeof(buffer))
+  if (n >= (int)sizeof(buffer))
     return -1;
 
   fd = open(buffer, O_RDONLY | O_BINARY);
@@ -178,7 +178,6 @@ static int tftp_send_error(struct tftp_session *spt,
   SockAddress saddr, daddr;
   struct mbuf *m;
   struct tftp_t *tp;
-  int nobytes;
 
   m = m_get();
 
@@ -203,8 +202,6 @@ static int tftp_send_error(struct tftp_session *spt,
   sock_address_init_inet( &daddr,
                           spt->client_ip,
                           spt->client_port );
-
-  nobytes = 2;
 
   m->m_len = sizeof(struct tftp_t) - 514 + 3 + strlen(msg) -
         sizeof(struct ip) - sizeof(struct udphdr);
@@ -378,10 +375,9 @@ static void tftp_handle_rrq(struct tftp_t *tp, int pktlen)
 
 	  if (tsize == 0 && tftp_prefix) {
 	      char buffer[1024];
-	      int len;
 
-	      len = snprintf(buffer, sizeof(buffer), "%s/%s",
-			     tftp_prefix, spt->filename);
+	      snprintf(buffer, sizeof(buffer), "%s/%s",
+                       tftp_prefix, spt->filename);
 
 	      if (stat(buffer, &stat_p) == 0)
 		  tsize = stat_p.st_size;

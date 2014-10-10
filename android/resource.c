@@ -10,7 +10,6 @@
 ** GNU General Public License for more details.
 */
 #include "android/resource.h"
-#include "config-host.h"
 #include <string.h>
 
 typedef struct {
@@ -34,16 +33,6 @@ _resource_find( const char*       name,
         }
     }
     return NULL;
-}
-
-#undef   _file_entries
-#define  _file_entries  _skin_entries
-const unsigned char*
-android_resource_find( const char*  name,
-                       size_t      *psize )
-{
-#    include "android/skin/default.h"
-    return _resource_find( name, _file_entries, psize );
 }
 
 #undef   _file_entries

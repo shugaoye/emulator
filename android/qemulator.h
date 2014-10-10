@@ -13,11 +13,12 @@
 #ifndef QEMU_ANDROID_QEMULATOR_H
 #define QEMU_ANDROID_QEMULATOR_H
 
-#include "android/config.h"
+#include "android/cmdline-option.h"
+#include "android/framebuffer.h"
 #include "android/skin/file.h"
 #include "android/skin/keyboard.h"
 #include "android/skin/window.h"
-#include "android/cmdline-option.h"
+#include "android/utils/aconfig-file.h"
 
 typedef struct {
     AConfig*       aconfig;
@@ -40,6 +41,9 @@ typedef struct {
 /* Gets a pointer to a QEmulator structure instance. */
 QEmulator*
 qemulator_get(void);
+
+void
+android_emulator_set_window_scale(double  scale, int  is_dpi);
 
 /* Initializes QEmulator structure instance. */
 int

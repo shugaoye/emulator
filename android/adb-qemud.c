@@ -17,6 +17,7 @@
 #include "qemu-common.h"
 #include "android/globals.h"  /* for android_hw */
 #include "android/hw-qemud.h"
+#include "android/utils/format.h"
 #include "android/utils/misc.h"
 #include "android/utils/system.h"
 #include "android/utils/debug.h"
@@ -29,7 +30,8 @@
 #define  DD(...)   VERBOSE_PRINT(adb,__VA_ARGS__)
 #define  D_ACTIVE  VERBOSE_CHECK(adbclient)
 #define  DD_ACTIVE VERBOSE_CHECK(adb)
-#define  QB(b, s)  quote_bytes((const char*)b, (s < 32) ? s : 32)
+#define  FHP(dst, dstLen, src, srcLen)  format_hex_printable2(dst, dstLen, src, (srcLen < 32) ? srcLen : 32)
+#define  FHP_MAX (9*(32/4) + 4 + 9*(32/8)) // format_hex_printable2 output len for 32 src bytes
 
 #define SERVICE_NAME        "adb"
 #define DEBUG_SERVICE_NAME  "adb-debug"
@@ -115,6 +117,29 @@ _adb_on_host_disconnect(void* opaque, void* connection)
 
     D("ADB client %p(o=%p) is disconnected from the host %p",
       adb_client, adb_client->opaque, connection);
+
+    /* Dispatch the command SYNC(0,0) to guest in order to close transport */
+    // This constant and structure came from system/core/adb/adb.h
+    // (see struct amessage declaration).
+    #define kAdbCommandSync 0x434e5953U
+    static const struct AdbMessageHeader {
+        uint32_t command;
+        uint32_t arg0;
+        uint32_t arg1;
+        uint32_t data_length;
+        uint32_t data_check;
+        uint32_t magic;
+    } message = {
+        kAdbCommandSync,
+        0,
+        0,
+        0,
+        0,
+        kAdbCommandSync ^ 0xffffffffU,
+    };
+    qemud_client_send(adb_client->qemud_client,
+                      (const uint8_t*)&message,
+                      sizeof(message));
     adb_client->state = ADBC_STATE_HOST_DISCONNECTED;
 }
 
@@ -128,8 +153,9 @@ static void
 _adb_on_host_data(void* opaque, void* connection, const void* buff, int size)
 {
     AdbClient* const adb_client = (AdbClient*)opaque;
+    char tmp[FHP_MAX];
     D("ADB client %p(o=%p) received from the host %p %d bytes in %s",
-      adb_client, adb_client->opaque, connection, size, QB(buff, size));
+      adb_client, adb_client->opaque, connection, size, FHP(tmp, sizeof(tmp), buff, size));
 
     if (adb_client->state == ADBC_STATE_CONNECTED) {
         /* Dispatch data down to the guest. */
@@ -184,9 +210,10 @@ static void
 _adb_client_recv(void* opaque, uint8_t* msg, int msglen, QemudClient* client)
 {
     AdbClient* const adb_client = (AdbClient*)opaque;
+    char tmp[FHP_MAX];
 
     D("ADB client %p(o=%p) received from guest %d bytes in %s",
-      adb_client, adb_client->opaque, msglen, QB(msg, msglen));
+      adb_client, adb_client->opaque, msglen, FHP(tmp, sizeof(tmp), msg, msglen));
 
     if (adb_client->state == ADBC_STATE_CONNECTED) {
         /* Connection is fully established. Dispatch the message to the host. */
@@ -202,7 +229,7 @@ _adb_client_recv(void* opaque, uint8_t* msg, int msglen, QemudClient* client)
      */
 
     /* Make sure tha message doesn't overflow the buffer. */
-    if ((msglen + adb_client->msg_cur) > sizeof(adb_client->msg_buffer)) {
+    if ((msglen + adb_client->msg_cur) > (int)sizeof(adb_client->msg_buffer)) {
         D("Unexpected message in ADB client.");
         adb_client->msg_cur = 0;
         return;
@@ -246,7 +273,7 @@ _adb_client_recv(void* opaque, uint8_t* msg, int msglen, QemudClient* client)
 
         default:
             D("Unexpected ADB guest request '%s' while client state is %d.",
-              QB(msg, msglen), adb_client->state);
+              FHP(tmp, sizeof(tmp), msg, msglen), adb_client->state);
             break;
     }
 }

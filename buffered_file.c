@@ -13,8 +13,8 @@
 
 #include "qemu-common.h"
 #include "hw/hw.h"
-#include "qemu-timer.h"
-#include "qemu-char.h"
+#include "qemu/timer.h"
+#include "sysemu/char.h"
 #include "buffered_file.h"
 
 //#define DEBUG_BUFFERED_FILE
@@ -56,7 +56,7 @@ static void buffered_append(QEMUFileBuffered *s,
 
         s->buffer_capacity += size + 1024;
 
-        tmp = qemu_realloc(s->buffer, s->buffer_capacity);
+        tmp = g_realloc(s->buffer, s->buffer_capacity);
         if (tmp == NULL) {
             fprintf(stderr, "qemu file buffer expansion failed\n");
             exit(1);
@@ -181,10 +181,10 @@ static int buffered_close(void *opaque)
 
     ret = s->close(s->opaque);
 
-    qemu_del_timer(s->timer);
-    qemu_free_timer(s->timer);
-    qemu_free(s->buffer);
-    qemu_free(s);
+    timer_del(s->timer);
+    timer_free(s->timer);
+    g_free(s->buffer);
+    g_free(s);
 
     return ret;
 }
@@ -237,7 +237,7 @@ static void buffered_rate_tick(void *opaque)
         return;
     }
 
-    qemu_mod_timer(s->timer, qemu_get_clock_ms(rt_clock) + 100);
+    timer_mod(s->timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
 
     if (s->freeze_output)
         return;
@@ -250,6 +250,14 @@ static void buffered_rate_tick(void *opaque)
     s->put_ready(s->opaque);
 }
 
+static const QEMUFileOps buffered_file_ops = {
+    .put_buffer = buffered_put_buffer,
+    .close = buffered_close,
+    .rate_limit = buffered_rate_limit,
+    .set_rate_limit = buffered_set_rate_limit,
+    .get_rate_limit = buffered_get_rate_limit,
+};
+
 QEMUFile *qemu_fopen_ops_buffered(void *opaque,
                                   size_t bytes_per_sec,
                                   BufferedPutFunc *put_buffer,
@@ -259,7 +267,7 @@ QEMUFile *qemu_fopen_ops_buffered(void *opaque,
 {
     QEMUFileBuffered *s;
 
-    s = qemu_mallocz(sizeof(*s));
+    s = g_malloc0(sizeof(*s));
 
     s->opaque = opaque;
     s->xfer_limit = bytes_per_sec / 10;
@@ -268,14 +276,10 @@ QEMUFile *qemu_fopen_ops_buffered(void *opaque,
     s->wait_for_unfreeze = wait_for_unfreeze;
     s->close = close;
 
-    s->file = qemu_fopen_ops(s, buffered_put_buffer, NULL,
-                             buffered_close, buffered_rate_limit,
-                             buffered_set_rate_limit,
-			     buffered_get_rate_limit);
+    s->file = qemu_fopen_ops(s, &buffered_file_ops);
+    s->timer = timer_new(QEMU_CLOCK_REALTIME, SCALE_MS, buffered_rate_tick, s);
 
-    s->timer = qemu_new_timer_ms(rt_clock, buffered_rate_tick, s);
-
-    qemu_mod_timer(s->timer, qemu_get_clock_ms(rt_clock) + 100);
+    timer_mod(s->timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
 
     return s->file;
 }

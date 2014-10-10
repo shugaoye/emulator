@@ -10,13 +10,18 @@
 ** GNU General Public License for more details.
 */
 
+#include "android/qemulator.h"
+
+#include "android/android.h"
+#include "android/framebuffer.h"
+#include "android/globals.h"
+#include "android/hw-control.h"
+#include "android/hw-sensors.h"
+#include "android/opengles.h"
+#include "android/user-events.h"
 #include "android/utils/debug.h"
 #include "android/utils/bufprint.h"
-#include "android/globals.h"
-#include "android/qemulator.h"
-#include "android/protocol/core-commands-api.h"
-#include "android/protocol/ui-commands-api.h"
-#include "user-events.h"
+#include "telephony/modem_driver.h"
 
 #define  D(...)  do {  if (VERBOSE_CHECK(init)) dprint(__VA_ARGS__); } while (0)
 static double get_default_scale( AndroidOptions*  opts );
@@ -42,6 +47,34 @@ qemulator_light_brightness( void* opaque, const char*  light, int  value )
     }
 }
 
+static void qemulator_trackball_event(int dx, int dy) {
+    user_event_mouse(dx, dy, 1, 0);
+}
+
+static void qemulator_window_key_event(unsigned keycode, int down) {
+    user_event_key(keycode, down);
+}
+
+static void qemulator_window_mouse_event(unsigned x,
+                                         unsigned y,
+                                         unsigned state) {
+    /* NOTE: the 0 is used in hw/android/goldfish/events_device.c to
+     * differentiate between a touch-screen and a trackball event
+     */
+    user_event_mouse(x, y, 0, state);
+}
+
+static void qemulator_window_generic_event(int event_type,
+                                           int event_code,
+                                           int event_value) {
+    user_event_generic(event_type, event_code, event_value);
+    /* XXX: hack, replace by better code here */
+    if (event_value != 0)
+        android_sensors_set_coarse_orientation(ANDROID_COARSE_PORTRAIT);
+    else
+        android_sensors_set_coarse_orientation(ANDROID_COARSE_LANDSCAPE);
+}
+
 static void
 qemulator_setup( QEmulator*  emulator )
 {
@@ -51,7 +84,21 @@ qemulator_setup( QEmulator*  emulator )
         SkinLayout*  layout = emulator->layout;
         double       scale  = get_default_scale(emulator->opts);
 
-        emulator->window = skin_window_create( layout, emulator->win_x, emulator->win_y, scale, 0);
+        static const SkinWindowFuncs skin_window_funcs = {
+            .key_event = &qemulator_window_key_event,
+            .mouse_event = &qemulator_window_mouse_event,
+            .generic_event = &qemulator_window_generic_event,
+            .opengles_show = &android_showOpenglesWindow,
+            .opengles_hide = &android_hideOpenglesWindow,
+            .opengles_redraw = &android_redrawOpenglesWindow,
+        };
+
+        emulator->window = skin_window_create(layout,
+                                              emulator->win_x,
+                                              emulator->win_y,
+                                              scale,
+                                              0,
+                                              &skin_window_funcs);
         if (emulator->window == NULL)
             return;
 
@@ -64,6 +111,7 @@ qemulator_setup( QEmulator*  emulator )
             params.ball_color = 0xffe0e0e0;
             params.dot_color  = 0xff202020;
             params.ring_color = 0xff000000;
+            params.event_func = &qemulator_trackball_event;
 
             ball = skin_trackball_create( &params );
             emulator->trackball = ball;
@@ -89,8 +137,9 @@ qemulator_setup( QEmulator*  emulator )
     }
 
     /* initialize hardware control support */
-    uicmd_set_brightness_change_callback(qemulator_light_brightness,
-                                         emulator);
+    AndroidHwControlFuncs funcs;
+    funcs.light_brightness = qemulator_light_brightness;
+    android_hw_control_set(emulator, &funcs);
 }
 
 static void
@@ -127,6 +176,34 @@ qemulator_get(void)
     return qemulator;
 }
 
+static void qemulator_framebuffer_free(void* opaque) {
+    QFrameBuffer* fb = opaque;
+
+    qframebuffer_done(fb);
+    free(fb);
+}
+
+static void* qemulator_framebuffer_create(int width, int height, int bpp) {
+    QFrameBuffer* fb = calloc(1, sizeof(*fb));
+
+    qframebuffer_init(fb, width, height, 0,
+                      bpp == 32 ? QFRAME_BUFFER_RGBX_8888
+                                : QFRAME_BUFFER_RGB565 );
+
+    qframebuffer_fifo_add(fb);
+    return fb;
+}
+
+static void* qemulator_framebuffer_get_pixels(void* opaque) {
+    QFrameBuffer* fb = opaque;
+    return fb->pixels;
+}
+
+static int qemulator_framebuffer_get_depth(void* opaque) {
+    QFrameBuffer* fb = opaque;
+    return fb->bits_per_pixel;
+}
+
 int
 qemulator_init( QEmulator*       emulator,
                 AConfig*         aconfig,
@@ -135,10 +212,23 @@ qemulator_init( QEmulator*       emulator,
                 int              y,
                 AndroidOptions*  opts )
 {
+    static const SkinFramebufferFuncs skin_fb_funcs = {
+        .create_framebuffer = &qemulator_framebuffer_create,
+        .free_framebuffer = &qemulator_framebuffer_free,
+        .get_pixels = &qemulator_framebuffer_get_pixels,
+        .get_depth = &qemulator_framebuffer_get_depth,
+    };
+
     emulator->aconfig     = aconfig;
-    emulator->layout_file = skin_file_create_from_aconfig(aconfig, basepath);
+    emulator->layout_file =
+            skin_file_create_from_aconfig(aconfig,
+                                          basepath,
+                                          &skin_fb_funcs);
+
     emulator->layout      = emulator->layout_file->layouts;
-    emulator->keyboard    = skin_keyboard_create(opts->charmap, opts->raw_keys);
+    emulator->keyboard    = skin_keyboard_create(opts->charmap,
+                                                 opts->raw_keys,
+                                                 &user_event_keycodes);
     emulator->window      = NULL;
     emulator->win_x       = x;
     emulator->win_y       = y;
@@ -148,7 +238,7 @@ qemulator_init( QEmulator*       emulator,
     SKIN_FILE_LOOP_PARTS( emulator->layout_file, part )
         SkinDisplay*  disp = part->display;
         if (disp->valid) {
-            qframebuffer_add_client( disp->qfbuff,
+            qframebuffer_add_client( disp->framebuffer,
                                      emulator,
                                      qemulator_fb_update,
                                      qemulator_fb_rotate,
@@ -198,7 +288,7 @@ qemulator_get_first_framebuffer(QEmulator* emulator)
     SKIN_FILE_LOOP_PARTS( emulator->layout_file, part )
         SkinDisplay*  disp = part->display;
         if (disp->valid) {
-            return disp->qfbuff;
+            return disp->framebuffer;
         }
     SKIN_FILE_LOOP_END_PARTS
     return NULL;
@@ -216,7 +306,7 @@ qemulator_set_title(QEmulator* emulator)
         SkinKeyBinding  bindings[ SKIN_KEY_COMMAND_MAX_BINDINGS ];
         int             count;
 
-        count = skin_keyset_get_bindings( android_keyset,
+        count = skin_keyset_get_bindings( skin_keyset_get_default(),
                                           SKIN_KEY_COMMAND_TOGGLE_TRACKBALL,
                                           bindings );
 
@@ -252,7 +342,7 @@ qemulator_set_title(QEmulator* emulator)
 static int
 get_device_dpi( AndroidOptions*  opts )
 {
-    int    dpi_device  = corecmd_get_hw_lcd_density();
+    int dpi_device = android_hw->hw_lcd_density;
 
     if (opts->dpi_device != NULL) {
         char*  end;
@@ -329,7 +419,7 @@ get_default_scale( AndroidOptions*  opts )
 static void
 handle_key_command( void*  opaque, SkinKeyCommand  command, int  down )
 {
-    static const struct { SkinKeyCommand  cmd; AndroidKeyCode  kcode; }  keycodes[] =
+    static const struct { SkinKeyCommand  cmd; SkinKeyCode  kcode; }  keycodes[] =
     {
         { SKIN_KEY_COMMAND_BUTTON_CALL,        kKeyCodeCall },
         { SKIN_KEY_COMMAND_BUTTON_HOME,        kKeyCodeHome },
@@ -363,9 +453,6 @@ handle_key_command( void*  opaque, SkinKeyCommand  command, int  down )
         { SKIN_KEY_COMMAND_NONE, 0 }
     };
     int          nn;
-#ifdef CONFIG_TRACE
-    static int   tracing = 0;
-#endif
     QEmulator*   emulator = opaque;
 
 
@@ -396,8 +483,14 @@ handle_key_command( void*  opaque, SkinKeyCommand  command, int  down )
     {
     case SKIN_KEY_COMMAND_TOGGLE_NETWORK:
         {
-            corecmd_toggle_network();
-            D( "network is now %s", corecmd_is_network_disabled() ?
+            qemu_net_disable = !qemu_net_disable;
+            if (android_modem) {
+                amodem_set_data_registration(
+                        android_modem,
+                qemu_net_disable ? A_REGISTRATION_UNREGISTERED
+                    : A_REGISTRATION_HOME);
+            }
+            D( "network is now %s", qemu_net_disable ?
                                     "disconnected" : "connected" );
         }
         break;
@@ -405,15 +498,6 @@ handle_key_command( void*  opaque, SkinKeyCommand  command, int  down )
     case SKIN_KEY_COMMAND_TOGGLE_FULLSCREEN:
         if (emulator->window) {
             skin_window_toggle_fullscreen(emulator->window);
-        }
-        break;
-
-    case SKIN_KEY_COMMAND_TOGGLE_TRACING:
-        {
-#ifdef CONFIG_TRACE
-            tracing = !tracing;
-            corecmd_trace_control(tracing);
-#endif
         }
         break;
 
@@ -545,20 +629,20 @@ static void qemulator_refresh(QEmulator* emulator)
                 if (ev.button.button == 4)
                 {
                     /* scroll-wheel simulates DPad up */
-                    AndroidKeyCode  kcode;
+                    SkinKeyCode  kcode;
 
                     kcode = // qemulator_rotate_keycode(kKeyCodeDpadUp);
-                        android_keycode_rotate(kKeyCodeDpadUp,
+                        skin_keycode_rotate(kKeyCodeDpadUp,
                             skin_layout_get_dpad_rotation(qemulator_get_layout(qemulator_get())));
                     user_event_key( kcode, down );
                 }
                 else if (ev.button.button == 5)
                 {
                     /* scroll-wheel simulates DPad down */
-                    AndroidKeyCode  kcode;
+                    SkinKeyCode  kcode;
 
                     kcode = // qemulator_rotate_keycode(kKeyCodeDpadDown);
-                        android_keycode_rotate(kKeyCodeDpadDown,
+                        skin_keycode_rotate(kKeyCodeDpadDown,
                             skin_layout_get_dpad_rotation(qemulator_get_layout(qemulator_get())));
                     user_event_key( kcode, down );
                 }
@@ -600,7 +684,7 @@ android_emulator_get_keyboard(void)
 }
 
 void
-android_emulator_set_window_scale( double  scale, int  is_dpi )
+android_emulator_set_window_scale(double  scale, int  is_dpi)
 {
     QEmulator*  emulator = qemulator;
 

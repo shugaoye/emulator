@@ -18,14 +18,14 @@
  * guest clients to directly connect to a TCP port through /dev/qemu_pipe.
  */
 
-#include "sockets.h"
+#include "android/sockets.h"
 #include "android/utils/assert.h"
 #include "android/utils/panic.h"
 #include "android/utils/system.h"
 #include "android/async-utils.h"
 #include "android/opengles.h"
 #include "android/looper.h"
-#include "hw/goldfish_pipe.h"
+#include "hw/android/goldfish/pipe.h"
 
 /* Implement the OpenGL fast-pipe */
 
@@ -251,7 +251,7 @@ netPipe_sendBuffers( void* opaque, const GoldfishPipeBuffer* buffers, int numBuf
     NetPipe*  pipe = opaque;
     int       count = 0;
     int       ret   = 0;
-    int       buffStart = 0;
+    size_t    buffStart = 0;
     const GoldfishPipeBuffer* buff = buffers;
     const GoldfishPipeBuffer* buffEnd = buff + numBuffers;
 
@@ -309,7 +309,7 @@ netPipe_recvBuffers( void* opaque, GoldfishPipeBuffer*  buffers, int  numBuffers
     NetPipe*  pipe = opaque;
     int       count = 0;
     int       ret   = 0;
-    int       buffStart = 0;
+    size_t    buffStart = 0;
     GoldfishPipeBuffer* buff = buffers;
     GoldfishPipeBuffer* buffEnd = buff + numBuffers;
 
@@ -482,7 +482,6 @@ static int  _opengles_init;
 static void*
 openglesPipe_init( void* hwpipe, void* _looper, const char* args )
 {
-    char temp[32];
     NetPipe *pipe;
 
     if (!_opengles_init) {

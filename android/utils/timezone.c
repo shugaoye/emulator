@@ -10,6 +10,7 @@
 ** GNU General Public License for more details.
 */
 #include "android/utils/debug.h"
+#include "android/utils/eintr_wrapper.h"
 #include "android/utils/timezone.h"
 #include "android/utils/bufprint.h"
 #include "android/android.h"
@@ -71,7 +72,7 @@ timezone_set( const char*  tzname )
         return -1;
 
     len = strlen(tzname);
-    if (len > sizeof(android_timezone0)-1)
+    if (len > (int)sizeof(android_timezone0)-1)
         return -1;
 
     strcpy( android_timezone0, tzname );
@@ -207,10 +208,10 @@ compare_timezone_to_localtime( ScanDataRec*  scan,
             char  temp[2];
             int   ret;
 
-            do { ret = read(fd1, &temp[0], 1); } while (ret < 0 && errno == EINTR);
+            ret = HANDLE_EINTR(read(fd1, &temp[0], 1));
             if (ret < 0) break;
 
-            do { ret = read(fd2, &temp[1], 1); } while (ret < 0 && errno == EINTR);
+            ret = HANDLE_EINTR(read(fd2, &temp[1], 1));
             if (ret < 0) break;
 
             if (temp[0] != temp[1])
@@ -253,7 +254,11 @@ scan_timezone_dir( ScanDataRec*  scan,
 
             //D( "%s: scanning '%s'\n", __FUNCTION__, scan->path );
 
-            if ( stat( scan->path, &ent_st ) < 0 )
+            // Important: use lstat() instead of stat() because recent
+            // Ubuntu distributions creates directories full of links, e.g.
+            // /usr/share/info/posix/Australia/Sydney -> ../../Australia/Sydney
+            // and we want to ignore them.
+            if ( lstat( scan->path, &ent_st ) < 0 )
                 continue;
 
             if ( S_ISDIR(ent_st.st_mode) && depth < 2 )

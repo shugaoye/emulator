@@ -22,11 +22,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "qemu-queue.h"
-#include "osdep.h"
-#include "sysemu.h"
+#include "qemu/queue.h"
+#include "qemu/osdep.h"
+#include "sysemu/sysemu.h"
 #include "qemu-common.h"
-#include "block_int.h"
+#include "block/block_int.h"
 
 #include "block/raw-posix-aio.h"
 
@@ -205,7 +205,7 @@ static ssize_t handle_aiocb_rw_linear(struct qemu_paiocb *aiocb, char *buf)
     ssize_t offset = 0;
     ssize_t len;
 
-    while (offset < aiocb->aio_nbytes) {
+    while ((size_t)offset < aiocb->aio_nbytes) {
          if (aiocb->aio_type & QEMU_AIO_WRITE)
              len = pwrite(aiocb->aio_fildes,
                           (const char *)buf + offset,
@@ -252,7 +252,7 @@ static ssize_t handle_aiocb_rw(struct qemu_paiocb *aiocb)
          */
         if (preadv_present) {
             nbytes = handle_aiocb_rw_vector(aiocb);
-            if (nbytes == aiocb->aio_nbytes)
+            if (nbytes == (ssize_t)aiocb->aio_nbytes)
                 return nbytes;
             if (nbytes < 0 && nbytes != -ENOSYS)
                 return nbytes;
@@ -447,7 +447,7 @@ static int posix_aio_process_queue(void *opaque)
                 /* end of aio */
                 if (ret == 0) {
                     ret = qemu_paio_return(acb);
-                    if (ret == acb->aio_nbytes)
+                    if (ret == (int)acb->aio_nbytes)
                         ret = 0;
                     else
                         ret = -EINVAL;
@@ -512,7 +512,7 @@ static void aio_signal_handler(int signum)
             die("write()");
     }
 
-    qemu_service_io();
+    qemu_notify_event();
 }
 
 static void paio_remove(struct qemu_paiocb *acb)
@@ -628,7 +628,7 @@ int paio_init(void)
     if (posix_aio_state)
         return 0;
 
-    s = qemu_malloc(sizeof(PosixAioState));
+    s = g_malloc(sizeof(PosixAioState));
 
     sigfillset(&act.sa_mask);
     act.sa_flags = 0; /* do not restart syscalls to interrupt select() */

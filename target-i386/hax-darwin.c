@@ -18,7 +18,9 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 
+#include "exec/ram_addr.h"
 #include "target-i386/hax-i386.h"
+
 hax_fd hax_mod_open(void)
 {
     int fd = open("/dev/HAX", O_RDWR);
@@ -54,7 +56,7 @@ int hax_populate_ram(uint64_t va, uint32_t size)
     return 0;
 }
 
-int hax_set_phys_mem(target_phys_addr_t start_addr, ram_addr_t size, ram_addr_t phys_offset)
+int hax_set_phys_mem(hwaddr start_addr, ram_addr_t size, ram_addr_t phys_offset)
 {
     struct hax_set_ram_info info, *pinfo = &info;
     int ret;
@@ -73,7 +75,7 @@ int hax_set_phys_mem(target_phys_addr_t start_addr, ram_addr_t size, ram_addr_t 
 
     info.pa_start = start_addr;
     info.size = size;
-    info.va = (uint64_t)qemu_get_ram_ptr(phys_offset);
+    info.va = (uint64_t)(uintptr_t)qemu_get_ram_ptr(phys_offset);
     info.flags = (flags & IO_MEM_ROM) ? 1 : 0;
 
     ret = ioctl(hax_global.vm->fd, HAX_VM_IOCTL_SET_RAM, pinfo);
@@ -123,7 +125,7 @@ static char *hax_vm_devfs_string(int vm_id)
         return NULL;
     }
 
-    name = qemu_strdup("/dev/hax_vm/vmxx");
+    name = g_strdup("/dev/hax_vm/vmxx");
     if (!name)
         return NULL;
     sprintf(name, "/dev/hax_vm/vm%02d", vm_id);
@@ -141,7 +143,7 @@ static char *hax_vcpu_devfs_string(int vm_id, int vcpu_id)
         return NULL;
     }
 
-    name = qemu_strdup("/dev/hax_vmxx/vcpuyy");
+    name = g_strdup("/dev/hax_vmxx/vcpuyy");
     if (!name)
         return NULL;
 
@@ -176,7 +178,7 @@ hax_fd hax_host_open_vm(struct hax_state *hax, int vm_id)
         return -1;
 
     fd = open(vm_name, O_RDWR);
-    qemu_free(vm_name);
+    g_free(vm_name);
 
     return fd;
 }
@@ -198,7 +200,7 @@ int hax_notify_qemu_version(hax_fd vm_fd, struct hax_qemu_version *qversion)
     return 0;
 }
 
-/* 
+/*
  * Simply assume that the size should be bigger than the hax_tunnel,
  * since the hax_tunnel can be extended later with backward
  * compatibility.
@@ -227,7 +229,7 @@ hax_fd hax_host_open_vcpu(int vmid, int vcpuid)
     }
 
     fd = open(devfs_path, O_RDWR);
-    qemu_free(devfs_path);
+    g_free(devfs_path);
     if (fd < 0)
         dprint("Failed to open the vcpu devfs\n");
     return fd;
@@ -252,8 +254,8 @@ int hax_host_setup_vcpu_channel(struct hax_vcpu_state *vcpu)
         return ret;
     }
 
-    vcpu->tunnel = (struct hax_tunnel *)(info.va);
-    vcpu->iobuf = (unsigned char *)(info.io_va);
+    vcpu->tunnel = (struct hax_tunnel *)(uintptr_t)(info.va);
+    vcpu->iobuf = (unsigned char *)(uintptr_t)(info.io_va);
     return 0;
 }
 
@@ -265,11 +267,11 @@ int hax_vcpu_run(struct hax_vcpu_state* vcpu)
     return ret;
 }
 
-int hax_sync_fpu(CPUState *env, struct fx_layout *fl, int set)
+int hax_sync_fpu(CPUState *cpu, struct fx_layout *fl, int set)
 {
     int ret, fd;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (fd <= 0)
         return -1;
 
@@ -280,11 +282,11 @@ int hax_sync_fpu(CPUState *env, struct fx_layout *fl, int set)
     return ret;
 }
 
-int hax_sync_msr(CPUState *env, struct hax_msr_data *msrs, int set)
+int hax_sync_msr(CPUState *cpu, struct hax_msr_data *msrs, int set)
 {
     int ret, fd;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (fd <= 0)
         return -1;
     if (set)
@@ -294,11 +296,11 @@ int hax_sync_msr(CPUState *env, struct hax_msr_data *msrs, int set)
     return ret;
 }
 
-int hax_sync_vcpu_state(CPUState *env, struct vcpu_state_t *state, int set)
+int hax_sync_vcpu_state(CPUState *cpu, struct vcpu_state_t *state, int set)
 {
     int ret, fd;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (fd <= 0)
         return -1;
 
@@ -309,11 +311,11 @@ int hax_sync_vcpu_state(CPUState *env, struct vcpu_state_t *state, int set)
     return ret;
 }
 
-int hax_inject_interrupt(CPUState *env, int vector)
+int hax_inject_interrupt(CPUState *cpu, int vector)
 {
     int ret, fd;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (fd <= 0)
         return -1;
 

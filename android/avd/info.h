@@ -12,9 +12,13 @@
 #ifndef ANDROID_AVD_INFO_H
 #define ANDROID_AVD_INFO_H
 
+#include "android/utils/compiler.h"
 #include "android/utils/ini.h"
 #include "android/avd/hw-config.h"
 #include "android/config/config.h"
+#include "android/utils/file_data.h"
+
+ANDROID_BEGIN_HEADER
 
 /* An Android Virtual Device (AVD for short) corresponds to a
  * directory containing all kernel/disk images for a given virtual
@@ -171,6 +175,13 @@ char*  avdInfo_getDataImagePath( AvdInfo*  i );
 char*  avdInfo_getDefaultDataImagePath( AvdInfo*  i );
 char*  avdInfo_getDataInitImagePath( AvdInfo* i );
 
+/* Return a reference to the boot.prop file for this AVD, if any.
+ * The file contains additionnal properties to inject at boot time
+ * into the guest system. Note that this never returns NULL, but
+ * the corresponding content can be empty.
+ */
+const FileData* avdInfo_getBootProperties( AvdInfo* i );
+
 /* Returns the path to a given AVD image file. This will return NULL if
  * the file cannot be found / does not exist.
  */
@@ -221,6 +232,9 @@ void         avdInfo_getSkinInfo( AvdInfo*  i, char** pSkinName, char** pSkinDir
 /* Returns whether the AVD specifies the use of a dynamic skin */
 int          avdInfo_shouldUseDynamicSkin( AvdInfo* i);
 
+/* Returns the path that contains layout and assets for dynamic skin */
+char*        avdInfo_getDynamicSkinPath( AvdInfo* i);
+
 /* Find a charmap file named <charmapName>.kcm for this AVD.
  * Returns the path of the file on success, or NULL if not found.
  * The result string must be freed by the caller.
@@ -229,6 +243,12 @@ char*        avdInfo_getCharmapFile( AvdInfo* i, const char* charmapName );
 
 /* Returns TRUE iff in the Android build system */
 int          avdInfo_inAndroidBuild( AvdInfo*  i );
+
+/* Return the target CPU architecture for this AVD.
+ * This returns NULL if that cannot be determined, or a string that
+ * must be freed by the caller otherwise.
+ */
+char*        avdInfo_getTargetCpuArch(AvdInfo* i);
 
 /* Returns the target ABI for the corresponding platform image.
  * This may return NULL if it cannot be determined. Otherwise this is
@@ -267,6 +287,6 @@ int          avdInfo_getAdbdCommunicationMode( AvdInfo* i );
 */
 int          avdInfo_getSnapshotPresent(AvdInfo* i);
 
-/* */
+ANDROID_END_HEADER
 
 #endif /* ANDROID_AVD_INFO_H */

@@ -24,9 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <android/utils/compiler.h>
+#include <android/utils/host_bitness.h>
 #include <android/utils/panic.h>
 #include <android/utils/path.h>
 #include <android/utils/bufprint.h>
+#include <android/utils/win32_cmdline_quote.h>
 #include <android/avd/util.h>
 
 /* Required by android/utils/debug.h */
@@ -50,35 +53,23 @@ int android_verbose;
 #  define DLL_EXTENSION  ".so"
 #endif
 
-#if defined(__x86_64__)
-/* Normally emulator is compiled in 32-bit.  In standalone it can be compiled
-   in 64-bit (with ,/android-configure.sh --try-64).  In this case, emulator-$ARCH
-   are also compiled in 64-bit and will search for lib64*.so instead of lib*so */
-#define  GLES_EMULATION_LIB  "lib64OpenglRender" DLL_EXTENSION
-#elif defined(__i386__)
-#define  GLES_EMULATION_LIB  "libOpenglRender" DLL_EXTENSION
-#else
-#error Unknown architecture for codegen
-#endif
-
+// Name of GPU emulation main library for (32-bit and 64-bit versions)
+#define GLES_EMULATION_LIB    "libOpenglRender" DLL_EXTENSION
+#define GLES_EMULATION_LIB64  "lib64OpenglRender" DLL_EXTENSION
 
 /* Forward declarations */
 static char* getTargetEmulatorPath(const char* progName, const char* avdArch, const int force_32bit);
 static char* getSharedLibraryPath(const char* progName, const char* libName);
 static void  prependSharedLibraryPath(const char* prefix);
 
-#ifdef _WIN32
-static char* quotePath(const char* path);
-#endif
-
-/* The execv() definition in mingw is slightly bogus.
+/* The execv() definition in older mingw is slightly bogus.
  * It takes a second argument of type 'const char* const*'
  * while POSIX mandates char** instead.
  *
  * To avoid compiler warnings, define the safe_execv macro
  * to perform an explicit cast with mingw.
  */
-#ifdef _WIN32
+#if defined(_WIN32) && !ANDROID_GCC_PREREQ(4,4)
 #  define safe_execv(_filepath,_argv)  execv((_filepath),(const char* const*)(_argv))
 #else
 #  define safe_execv(_filepath,_argv)  execv((_filepath),(_argv))
@@ -103,6 +94,7 @@ int main(int argc, char** argv)
     /* Parse command-line and look for
      * 1) an avd name either in the form or '-avd <name>' or '@<name>'
      * 2) '-force-32bit' which always use 32-bit emulator on 64-bit platforms
+     * 3) '-verbose', or '-debug-all' or '-debug all' to enable verbose mode.
      */
     int  nn;
     for (nn = 1; nn < argc; nn++) {
@@ -110,6 +102,15 @@ int main(int argc, char** argv)
 
         if (!strcmp(opt,"-qemu"))
             break;
+
+        if (!strcmp(opt,"-verbose") || !strcmp(opt,"-debug-all")) {
+            android_verbose = 1;
+        }
+
+        if (!strcmp(opt,"-debug") && nn + 1 < argc &&
+            !strcmp(argv[nn + 1], "all")) {
+            android_verbose = 1;
+        }
 
         if (!strcmp(opt,"-force-32bit")) {
             force_32bit = 1;
@@ -126,6 +127,38 @@ int main(int argc, char** argv)
         }
     }
 
+    /* If ANDROID_EMULATOR_FORCE_32BIT is set to 'true' or '1' in the
+     * environment, set -force-32bit automatically.
+     */
+    {
+        const char kEnvVar[] = "ANDROID_EMULATOR_FORCE_32BIT";
+        const char* val = getenv(kEnvVar);
+        if (val && (!strcmp(val, "true") || !strcmp(val, "1"))) {
+            if (!force_32bit) {
+                D("Auto-config: -force-32bit (%s=%s)\n", kEnvVar, val);
+                force_32bit = 1;
+            }
+        }
+    }
+
+#if defined(__linux__)
+    if (!force_32bit && android_getHostBitness() == 32) {
+        fprintf(stderr,
+"ERROR: 32-bit Linux Android emulator binaries are DEPRECATED, to use them\n"
+"       you will have to do at least one of the following:\n"
+"\n"
+"       - Use the '-force-32bit' option when invoking 'emulator'.\n"
+"       - Set ANDROID_EMULATOR_FORCE_32BIT to 'true' in your environment.\n"
+"\n"
+"       Either one will allow you to use the 32-bit binaries, but please be\n"
+"       aware that these will disappear in a future Android SDK release.\n"
+"       Consider moving to a 64-bit Linux system before that happens.\n"
+"\n"
+        );
+        exit(1);
+    }
+#endif
+
     /* If there is an AVD name, we're going to extract its target architecture
      * by looking at its config.ini
      */
@@ -137,10 +170,11 @@ int main(int argc, char** argv)
         /* Otherwise, using the ANDROID_PRODUCT_OUT directory */
         const char* androidOut = getenv("ANDROID_PRODUCT_OUT");
 
-        if (androidOut != NULL && *androidOut != '\0') {
+        if (androidOut != NULL) {
             D("Found ANDROID_PRODUCT_OUT: %s\n", androidOut);
             avdArch = path_getBuildTargetArch(androidOut);
-            D("Found build target architecture: %s\n", avdArch);
+            D("Found build target architecture: %s\n",
+              avdArch ? avdArch : "<NULL>");
         }
     }
 
@@ -156,23 +190,17 @@ int main(int argc, char** argv)
     /* Replace it in our command-line */
     argv[0] = emulatorPath;
 
-#ifdef _WIN32
-    /* Looks like execv() in mingw (or is it MSVCRT.DLL?) doesn't
-     * support a space in argv[0] unless we explicitely quote it.
-     * IMPORTANT: do not quote the first argument to execv() or it will fail.
-     * This was tested on a 32-bit Vista installation.
-     */
-    if (strchr(emulatorPath, ' ')) {
-        argv[0] = quotePath(emulatorPath);
-        D("Quoted emulator binary path: %s\n", emulatorPath);
-    }
-#endif
-
     /* We need to find the location of the GLES emulation shared libraries
      * and modify either LD_LIBRARY_PATH or PATH accordingly
      */
     {
         char*  sharedLibPath = getSharedLibraryPath(emulatorPath, GLES_EMULATION_LIB);
+
+        if (!sharedLibPath) {
+            // Sometimes, only the 64-bit libraries are available, for example
+            // when storing binaries under $AOSP/prebuilts/android-emulator/<system>/
+            sharedLibPath = getSharedLibraryPath(emulatorPath, GLES_EMULATION_LIB64);
+        }
 
         if (sharedLibPath != NULL) {
             D("Found OpenGLES emulation libraries in %s\n", sharedLibPath);
@@ -182,7 +210,22 @@ int main(int argc, char** argv)
         }
     }
 
-    /* Launch it with the same set of options ! */
+#ifdef _WIN32
+    // Take care of quoting all parameters before sending them to execv().
+    // See the "Eveyone quotes command line arguments the wrong way" on
+    // MSDN.
+    int n;
+    for (n = 0; n < argc; ++n) {
+        // Technically, this leaks the quoted strings, but we don't care
+        // since this process will terminate after the execv() anyway.
+        argv[n] = win32_cmdline_quote(argv[n]);
+        D("Quoted param: [%s]\n", argv[n]);
+    }
+#endif
+
+    // Launch it with the same set of options !
+    // Note that on Windows, the first argument must _not_ be quoted or
+    // Windows will fail to find the program.
     safe_execv(emulatorPath, argv);
 
     /* We could not launch the program ! */
@@ -190,104 +233,171 @@ int main(int argc, char** argv)
     return errno;
 }
 
-static int
-getHostOSBitness()
-{
-  /*
-     This function returns 64 if host is running 64-bit OS, or 32 otherwise.
-
-     It uses the same technique in ndk/build/core/ndk-common.sh.
-     Here are comments from there:
-
-  ## On Linux or Darwin, a 64-bit kernel (*) doesn't mean that the user-land
-  ## is always 32-bit, so use "file" to determine the bitness of the shell
-  ## that invoked us. The -L option is used to de-reference symlinks.
-  ##
-  ## Note that on Darwin, a single executable can contain both x86 and
-  ## x86_64 machine code, so just look for x86_64 (darwin) or x86-64 (Linux)
-  ## in the output.
-
-    (*) ie. The following code doesn't always work:
-        struct utsname u;
-        int host_runs_64bit_OS = (uname(&u) == 0 && strcmp(u.machine, "x86_64") == 0);
-  */
-    return system("file -L \"$SHELL\" | grep -q \"x86[_-]64\"") == 0 ? 64 : 32;
-}
-
-/* Find the target-specific emulator binary. This will be something
- * like  <programDir>/emulator-<targetArch>, where <programDir> is
- * the directory of the current program.
+/* Probe the filesystem to check if an emulator executable named like
+ * <progDir>/<prefix><arch> exists.
+ *
+ * |progDir| is an optional program directory. If NULL, the executable
+ * will be searched in the current directory.
+ * |archSuffix| is an architecture-specific suffix, like "arm", or 'x86"
+ * If |search_for_64bit_emulator| is true, lookup for 64-bit emulator first,
+ * then the 32-bit version.
+ * If |try_current_path|, try to look into the current path if no
+ * executable was found under |progDir|.
+ * On success, returns the path of the executable (string must be freed by
+ * the caller). On failure, return NULL.
  */
 static char*
-getTargetEmulatorPath(const char* progName, const char* avdArch, const int force_32bit)
+probeTargetEmulatorPath(const char* progDir,
+                        const char* archSuffix,
+                        bool search_for_64bit_emulator,
+                        bool try_current_path)
+{
+    char path[PATH_MAX], *pathEnd = path + sizeof(path), *p;
+
+    static const char kEmulatorPrefix[] = "emulator-";
+    static const char kEmulator64Prefix[] = "emulator64-";
+#ifdef _WIN32
+    const char kExeExtension[] = ".exe";
+#else
+    const char kExeExtension[] = "";
+#endif
+
+    // First search for the 64-bit emulator binary.
+    if (search_for_64bit_emulator) {
+        p = path;
+        if (progDir) {
+            p = bufprint(p, pathEnd, "%s/", progDir);
+        }
+        p = bufprint(p, pathEnd, "%s%s%s", kEmulator64Prefix,
+                        archSuffix, kExeExtension);
+        D("Probing program: %s\n", path);
+        if (p < pathEnd && path_exists(path)) {
+            return strdup(path);
+        }
+    }
+
+    // Then for the 32-bit one.
+    p = path;
+    if (progDir) {
+        p = bufprint(p, pathEnd, "%s/", progDir);
+    }
+    p = bufprint(p, pathEnd, "%s%s%s", kEmulatorPrefix,
+                    archSuffix, kExeExtension);
+    D("Probing program: %s\n", path);
+    if (p < pathEnd && path_exists(path)) {
+        return strdup(path);
+    }
+
+    // Not found, try in the current path then
+    if (try_current_path) {
+        char* result;
+
+        if (search_for_64bit_emulator) {
+            p = bufprint(path, pathEnd, "%s%s%s", kEmulator64Prefix,
+                          archSuffix, kExeExtension);
+            if (p < pathEnd) {
+                D("Probing path for: %s\n", path);
+                result = path_search_exec(path);
+                if (result) {
+                    return result;
+                }
+            }
+        }
+
+        p = bufprint(path, pathEnd, "%s%s%s", kEmulatorPrefix,
+                      archSuffix, kExeExtension);
+        if (p < pathEnd) {
+            D("Probing path for: %s\n", path);
+            result = path_search_exec(path);
+            if (result) {
+                return result;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static char*
+getTargetEmulatorPath(const char* progName,
+                      const char* avdArch,
+                      const int force_32bit)
 {
     char*  progDir;
-    char   path[PATH_MAX], *pathEnd=path+sizeof(path), *p;
-    const char* emulatorPrefix = "emulator-";
-    const char* emulator64Prefix = "emulator64-";
+    char*  result;
 #ifdef _WIN32
-    const char* exeExt = ".exe";
-    /* ToDo: currently amd64-mingw32msvc-gcc doesn't work (http://b/issue?id=5949152)
-             which prevents us from generating 64-bit emulator for Windows */
-    int search_for_64bit_emulator = 0;
+    /* TODO: currently amd64-mingw32msvc-gcc doesn't work which prevents
+             generating 64-bit binaries for Windows */
+    bool search_for_64bit_emulator = false;
 #else
-    const char* exeExt = "";
-    int search_for_64bit_emulator = !force_32bit && getHostOSBitness() == 64;
+    bool search_for_64bit_emulator =
+            !force_32bit && android_getHostBitness() == 64;
+#endif
+
+    /* Only search in current path if there is no directory separator
+     * in |progName|. */
+#ifdef _WIN32
+    bool try_current_path =
+            (!strchr(progName, '/') && !strchr(progName, '\\'));
+#else
+    bool try_current_path = !strchr(progName, '/');
 #endif
 
     /* Get program's directory name in progDir */
     path_split(progName, &progDir, NULL);
 
-    if (search_for_64bit_emulator) {
-        /* Find 64-bit emulator first */
-        p = bufprint(path, pathEnd, "%s/%s%s%s", progDir, emulator64Prefix, avdArch, exeExt);
-        if (p >= pathEnd) {
-            APANIC("Path too long: %s\n", progName);
-        }
-        if (path_exists(path)) {
-            free(progDir);
-            return strdup(path);
+    const char* emulatorSuffix;
+
+    // Special case: for x86_64, first try to find emulator-x86_64 before
+    // looking for emulator-x86.
+    if (!strcmp(avdArch, "x86_64")) {
+        emulatorSuffix = "x86_64";
+
+        D("Looking for emulator backend for %s CPU\n", avdArch);
+
+        result = probeTargetEmulatorPath(progDir,
+                                         emulatorSuffix,
+                                         search_for_64bit_emulator,
+                                         try_current_path);
+        if (result) {
+            return result;
         }
     }
 
-    /* Find 32-bit emulator */
-    p = bufprint(path, pathEnd, "%s/%s%s%s", progDir, emulatorPrefix, avdArch, exeExt);
-    free(progDir);
-    if (p >= pathEnd) {
-        APANIC("Path too long: %s\n", progName);
+    // Special case: for arm64, first try to find emulator-arm64 before
+    // looking for emulator-arm.
+    if (!strcmp(avdArch, "arm64")) {
+        emulatorSuffix = "arm64";
+
+        D("Looking for emulator backend for %s CPU\n", avdArch);
+
+        result = probeTargetEmulatorPath(progDir,
+                                         emulatorSuffix,
+                                         search_for_64bit_emulator,
+                                         try_current_path);
+        if (result) {
+            return result;
+        }
     }
 
-    if (path_exists(path)) {
-        return strdup(path);
+    // Now for the regular case.
+    emulatorSuffix = emulator_getBackendSuffix(avdArch);
+    if (!emulatorSuffix) {
+        APANIC("This emulator cannot emulate %s CPUs!\n", avdArch);
     }
+    D("Looking for emulator-%s to emulate '%s' CPU\n", emulatorSuffix,
+      avdArch);
 
-    /* Mmm, the file doesn't exist, If there is no slash / backslash
-     * in our path, we're going to try to search it in our path.
-     */
-#ifdef _WIN32
-    if (strchr(progName, '/') == NULL && strchr(progName, '\\') == NULL) {
-#else
-    if (strchr(progName, '/') == NULL) {
-#endif
-        if (search_for_64bit_emulator) {
-           p = bufprint(path, pathEnd, "%s%s%s", emulator64Prefix, avdArch, exeExt);
-           if (p < pathEnd) {
-               char*  resolved = path_search_exec(path);
-               if (resolved != NULL)
-                   return resolved;
-           }
-        }
-
-        p = bufprint(path, pathEnd, "%s%s%s", emulatorPrefix, avdArch, exeExt);
-        if (p < pathEnd) {
-            char*  resolved = path_search_exec(path);
-            if (resolved != NULL)
-                return resolved;
-        }
+    result = probeTargetEmulatorPath(progDir,
+                                     emulatorSuffix,
+                                     search_for_64bit_emulator,
+                                     try_current_path);
+    if (result) {
+        return result;
     }
 
     /* Otherwise, the program is missing */
-    APANIC("Missing arch-specific emulator program: %s\n", path);
+    APANIC("Missing emulator engine program for '%s' CPUS.\n", avdArch);
     return NULL;
 }
 
@@ -369,41 +479,41 @@ EXIT:
 static void
 prependSharedLibraryPath(const char* prefix)
 {
-    char temp[2048], *p=temp, *end=p+sizeof(temp);
+    size_t len = 0;
+    char *temp = NULL;
+    const char* path = NULL;
+
 #ifdef _WIN32
-    const char* path = getenv("PATH");
-    if (path == NULL || path[0] == '\0') {
-        p = bufprint(temp, end, "PATH=%s", prefix);
+    path = getenv("PATH");
+#else
+    path = getenv("LD_LIBRARY_PATH");
+#endif
+
+    /* Will need up to 7 extra characters: "PATH=", ';' or ':', and '\0' */
+    len = 7 + strlen(prefix) + (path ? strlen(path) : 0);
+    temp = malloc(len);
+    if (!temp)
+        return;
+
+    if (path && path[0] != '\0') {
+#ifdef _WIN32
+        bufprint(temp, temp + len, "PATH=%s;%s", prefix, path);
+#else
+        bufprint(temp, temp + len, "%s:%s", prefix, path);
+#endif
     } else {
-        p = bufprint(temp, end, "PATH=%s;%s", path, prefix);
+#ifdef _WIN32
+        bufprint(temp, temp + len, "PATH=%s", prefix);
+#else
+        strcpy(temp, prefix);
+#endif
     }
-    /* Ignore overflow, this will push some paths out of the variable, but
-     * so be it. */
+
+#ifdef _WIN32
     D("Setting %s\n", temp);
     putenv(strdup(temp));
 #else
-    const char* path = getenv("LD_LIBRARY_PATH");
-    if (path != NULL && path[0] != '\0') {
-        p = bufprint(temp, end, "%s:%s", prefix, path);
-        prefix = temp;
-    }
-    setenv("LD_LIBRARY_PATH",prefix,1);
-    D("Setting LD_LIBRARY_PATH=%s\n", prefix);
+    D("Setting LD_LIBRARY_PATH=%s\n", temp);
+    setenv("LD_LIBRARY_PATH", temp, 1);
 #endif
 }
-
-#ifdef _WIN32
-static char*
-quotePath(const char* path)
-{
-    int   len = strlen(path);
-    char* ret = malloc(len+3);
-
-    ret[0] = '"';
-    memcpy(ret+1, path, len);
-    ret[len+1] = '"';
-    ret[len+2] = '\0';
-
-    return ret;
-}
-#endif /* _WIN32 */

@@ -21,24 +21,27 @@
  *
  */
 
-#include "sockets.h"
-#include "qemu-char.h"
-#include "sysemu.h"
+#include "android/sockets.h"
+#include "sysemu/char.h"
+#include "sysemu/sysemu.h"
 #include "android/android.h"
 #include "cpu.h"
-#include "hw/goldfish_device.h"
+#include "hw/android/goldfish/device.h"
 #include "hw/power_supply.h"
-#include "shaper.h"
+#include "android/shaper.h"
 #include "modem_driver.h"
 #include "android/gps.h"
 #include "android/globals.h"
 #include "android/utils/bufprint.h"
 #include "android/utils/debug.h"
+#include "android/utils/eintr_wrapper.h"
+#include "android/utils/http_utils.h"
 #include "android/utils/stralloc.h"
+#include "android/utils/utf8_utils.h"
 #include "android/config/config.h"
-#include "tcpdump.h"
-#include "net.h"
-#include "monitor.h"
+#include "android/tcpdump.h"
+#include "net/net.h"
+#include "monitor/monitor.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -47,21 +50,17 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "android/hw-events.h"
-#include "user-events.h"
+#include "android/user-events.h"
 #include "android/hw-sensors.h"
-#include "android/keycode-array.h"
-#include "android/charmap.h"
+#include "android/skin/charmap.h"
+#include "android/skin/keycode-buffer.h"
 #include "android/display-core.h"
-#include "android/protocol/fb-updates-proxy.h"
-#include "android/protocol/user-events-impl.h"
-#include "android/protocol/ui-commands-api.h"
-#include "android/protocol/core-commands-impl.h"
-#include "android/protocol/ui-commands-proxy.h"
-#include "android/protocol/attach-ui-proxy.h"
 
 #if defined(CONFIG_SLIRP)
 #include "libslirp.h"
 #endif
+
+extern void android_emulator_set_window_scale(double, int);
 
 #define  DEBUG  1
 
@@ -213,18 +212,6 @@ control_client_detach( ControlClient  client )
 
 static void  control_client_read( void*  _client );  /* forward */
 
-/* Reattach a control client to a given socket.
- * Return the old socket descriptor for the client.
- */
-static int
-control_client_reattach( ControlClient client, int fd )
-{
-    int result = control_client_detach(client);
-    client->sock = fd;
-    qemu_set_fd_handler( fd, control_client_read, NULL, client );
-    return result;
-}
-
 static void
 control_client_destroy( ControlClient  client )
 {
@@ -285,9 +272,9 @@ static void  control_control_write( ControlClient  client, const char*  buff, in
         len = strlen(buff);
 
     while (len > 0) {
-        ret = socket_send( client->sock, buff, len);
+        ret = HANDLE_EINTR(socket_send( client->sock, buff, len));
         if (ret < 0) {
-            if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
+            if (errno != EWOULDBLOCK && errno != EAGAIN)
                 return;
         } else {
             buff += ret;
@@ -418,6 +405,8 @@ dump_help( ControlClient  client,
     }
 }
 
+static int do_quit(ControlClient client, char* args);  // forward
+
 static void
 control_client_do_command( ControlClient  client )
 {
@@ -428,7 +417,16 @@ control_client_do_command( ControlClient  client )
     CommandDef  cmd      = find_command( line, commands, &cmdend, &args );
 
     if (cmd == NULL) {
-        control_write( client, "KO: unknown command, try 'help'\r\n" );
+        size_t line_len = strlen(line);
+        if (android_http_is_request_line(line, line_len)) {
+            control_write( client, "KO: Forbidden HTTP request. Aborting\r\n");
+            do_quit(client, NULL);
+        } else  if (!android_utf8_is_valid(line, line_len)) {
+            control_write( client, "KO: Forbidden binary request. Aborting\r\n");
+            do_quit(client, NULL);
+        } else {
+            control_write( client, "KO: unknown command, try 'help'\r\n" );
+        }
         return;
     }
 
@@ -600,16 +598,11 @@ control_global_accept( void*  _global )
 
     D(( "control_global_accept: just in (fd=%d)\n", global->listen_fd ));
 
-    for(;;) {
-        fd = socket_accept( global->listen_fd, NULL );
-        if (fd < 0 && errno != EINTR) {
-            D(( "problem in accept: %d: %s\n", errno, errno_str ));
-            perror("accept");
-            return;
-        } else if (fd >= 0) {
-            break;
-        }
-        D(( "relooping in accept()\n" ));
+    fd = HANDLE_EINTR(socket_accept(global->listen_fd, NULL));
+    if (fd < 0) {
+        D(( "problem in accept: %d: %s\n", errno, errno_str ));
+        perror("accept");
+        return;
     }
 
     socket_set_xreuseaddr( fd );
@@ -1977,11 +1970,11 @@ utf8_next( unsigned char* *pp, unsigned char*  end )
 static int
 do_event_text( ControlClient  client, char*  args )
 {
-    AKeycodeBuffer keycodes;
+    SkinKeycodeBuffer keycodes;
     unsigned char*  p   = (unsigned char*) args;
     unsigned char*  end = p + strlen(args);
     int             textlen;
-    const AKeyCharmap* charmap;
+    const SkinCharmap* charmap;
 
     if (!args) {
         control_write( client, "KO: argument missing, try 'event text <message>'\r\n" );
@@ -1989,13 +1982,13 @@ do_event_text( ControlClient  client, char*  args )
     }
 
     /* Get active charmap. */
-    charmap = android_get_charmap();
+    charmap = skin_charmap_get();
     if (charmap == NULL) {
         control_write( client, "KO: no character map active in current device layout/config\r\n" );
         return -1;
     }
 
-    keycodes.keycode_count = 0;
+    skin_keycodes_buffer_init(&keycodes, &user_event_keycodes);
 
     /* un-secape message text into proper utf-8 (conversion happens in-site) */
     textlen = strlen((char*)p);
@@ -2017,9 +2010,9 @@ do_event_text( ControlClient  client, char*  args )
         if (c <= 0)
             break;
 
-        android_charmap_reverse_map_unicode( NULL, (unsigned)c, 1, &keycodes );
-        android_charmap_reverse_map_unicode( NULL, (unsigned)c, 0, &keycodes );
-        android_keycodes_flush( &keycodes );
+        skin_charmap_reverse_map_unicode( NULL, (unsigned)c, 1, &keycodes );
+        skin_charmap_reverse_map_unicode( NULL, (unsigned)c, 0, &keycodes );
+        skin_keycodes_buffer_flush( &keycodes );
     }
 
     return 0;
@@ -2269,8 +2262,7 @@ do_geo_fix( ControlClient  client, char*  args )
     double  params[ NUM_GEO_PARAMS ];
     int     n_satellites = 1;
 
-    static  int     last_time = 0;
-    static  double  last_altitude = 0.;
+    static  int last_time = 0;
 
     if (!p)
         p = "";
@@ -2371,7 +2363,6 @@ do_geo_fix( ControlClient  client, char*  args )
         /* optional altitude + bogus diff */
         if (top_param >= GEO_ALT) {
             stralloc_add_format( s, ",%.1g,M,0.,M", params[GEO_ALT] );
-            last_altitude = params[GEO_ALT];
         } else {
             stralloc_add_str( s, ",,,," );
         }
@@ -2634,7 +2625,7 @@ do_window_scale( ControlClient  client, char*  args )
         }
     }
 
-    uicmd_set_window_scale( scale, is_dpi );
+    android_emulator_set_window_scale(scale, is_dpi);
     return 0;
 }
 
@@ -2660,26 +2651,8 @@ static const CommandDefRec  window_commands[] =
 static int
 do_qemu_monitor( ControlClient client, char* args )
 {
-    char             socketname[32];
-    int              fd;
-    CharDriverState* cs;
-
-    if (args != NULL) {
-        control_write( client, "KO: no argument for 'qemu monitor'\r\n" );
-        return -1;
-    }
-    /* Detach the client socket, and re-attach it to a monitor */
-    fd = control_client_detach(client);
-    snprintf(socketname, sizeof socketname, "tcp:socket=%d", fd);
-    cs = qemu_chr_open("monitor", socketname, NULL);
-    if (cs == NULL) {
-        control_client_reattach(client, fd);
-        control_write( client, "KO: internal error: could not detach from console !\r\n" );
-        return -1;
-    }
-    monitor_init(cs, MONITOR_USE_READLINE|MONITOR_QUIT_DOESNT_EXIT);
-    control_client_destroy(client);
-    return 0;
+    control_write(client, "KO: QEMU support no longer available\r\n");
+    return -1;
 }
 
 #ifdef CONFIG_STANDALONE_CORE

@@ -59,11 +59,11 @@ struct tcphdr {
 	tcp_seq	th_seq;			/* sequence number */
 	tcp_seq	th_ack;			/* acknowledgement number */
 #ifdef HOST_WORDS_BIGENDIAN
-	u_int	th_off:4,		/* data offset */
-		th_x2:4;		/* (unused) */
+	u_int8_t	th_off:4,	/* data offset */
+			th_x2:4;	/* (unused) */
 #else
-	u_int	th_x2:4,		/* (unused) */
-		th_off:4;		/* data offset */
+	u_int8_t	th_x2:4,	/* (unused) */
+			th_off:4;	/* data offset */
 #endif
 	u_int8_t	th_flags;
 #define	TH_FIN	0x01
@@ -112,7 +112,7 @@ struct tcphdr {
 /*
  * User-settable options (used with setsockopt).
  */
-#undef  TCP_NODELAY 
+#undef  TCP_NODELAY
 #define	TCP_NODELAY	0x01	/* don't delay send to coalesce packets */
 #undef  TCP_MAXSEG
 /* #define	TCP_MAXSEG	0x02 */	/* set maximum segment size */

@@ -24,14 +24,14 @@
  */
 #include "hw/hw.h"
 #include "audio.h"
-#include "monitor.h"
-#include "qemu-timer.h"
-#include "sysemu.h"
+#include "monitor/monitor.h"
+#include "qemu/timer.h"
+#include "sysemu/sysemu.h"
 
 #define AUDIO_CAP "audio"
 #include "audio_int.h"
 #include "android/utils/system.h"
-#include "qemu_debug.h"
+#include "android/qemu-debug.h"
 #include "android/android.h"
 
 /* #define DEBUG_PLIVE */
@@ -232,7 +232,7 @@ int audio_bug (const char *funcname, int cond)
         AUD_log (NULL, "Context:\n");
 
 #if defined AUDIO_BREAKPOINT_ON_BUG
-#  if defined HOST_I386
+#  if defined __i386__
 #    if defined __GNUC__
         __asm__ ("int3");
 #    elif defined _MSC_VER
@@ -286,7 +286,7 @@ void *audio_calloc (const char *funcname, int nmemb, size_t size)
         return NULL;
     }
 
-    return qemu_mallocz (len);
+    return g_malloc0 (len);
 }
 
 static char *audio_alloc_prefix (const char *s)
@@ -300,7 +300,7 @@ static char *audio_alloc_prefix (const char *s)
     }
 
     len = strlen (s);
-    r = qemu_malloc (len + sizeof (qemu_prefix));
+    r = g_malloc (len + sizeof (qemu_prefix));
 
     u = r + sizeof (qemu_prefix) - 1;
 
@@ -522,7 +522,7 @@ static void audio_print_options (const char *prefix,
         printf ("    %s\n", opt->descr);
     }
 
-    qemu_free (uprefix);
+    g_free (uprefix);
 }
 
 static void audio_process_options (const char *prefix,
@@ -559,7 +559,7 @@ static void audio_process_options (const char *prefix,
          * (includes trailing zero) + zero + underscore (on behalf of
          * sizeof) */
         optlen = len + preflen + sizeof (qemu_prefix) + 1;
-        optname = qemu_malloc (optlen);
+        optname = g_malloc (optlen);
 
         pstrcpy (optname, optlen, qemu_prefix);
 
@@ -604,7 +604,7 @@ static void audio_process_options (const char *prefix,
             opt->overriddenp = &opt->overridden;
         }
         *opt->overriddenp = !def;
-        qemu_free (optname);
+        g_free (optname);
     }
 }
 
@@ -877,7 +877,7 @@ static void audio_detach_capture (HWVoiceOut *hw)
 
         QLIST_REMOVE (sw, entries);
         QLIST_REMOVE (sc, entries);
-        qemu_free (sc);
+        g_free (sc);
         if (was_active) {
             /* We have removed soft voice from the capture:
                this might have changed the overall status of the capture
@@ -917,7 +917,7 @@ static int audio_attach_capture (HWVoiceOut *hw)
         sw->rate = st_rate_start (sw->info.freq, hw_cap->info.freq);
         if (!sw->rate) {
             dolog ("Could not start rate conversion for `%s'\n", SW_NAME (sw));
-            qemu_free (sw);
+            g_free (sw);
             return -1;
         }
         QLIST_INSERT_HEAD (&hw_cap->sw_head, sw, entries);
@@ -1198,7 +1198,7 @@ static void audio_timer (void *opaque)
     AudioState *s = opaque;
 #if 0
 #define  MAX_DIFFS  100
-    int64_t         now  = qemu_get_clock_ms(vm_clock);
+    int64_t         now  = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     static int64_t  last = 0;
     static float    diffs[MAX_DIFFS];
     static int      num_diffs;
@@ -1227,7 +1227,7 @@ static void audio_timer (void *opaque)
 #endif
 
     audio_run ("timer");
-    qemu_mod_timer (s->ts, qemu_get_clock_ns (vm_clock) + conf.period.ticks);
+    timer_mod(s->ts, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + conf.period.ticks);
 }
 
 
@@ -1250,10 +1250,10 @@ static void audio_reset_timer (void)
     AudioState *s = &glob_audio_state;
 
     if (audio_is_timer_needed ()) {
-        qemu_mod_timer (s->ts, qemu_get_clock_ns (vm_clock) + 1);
+        timer_mod(s->ts, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
     }
     else {
-        qemu_del_timer (s->ts);
+        timer_del(s->ts);
     }
 }
 
@@ -1964,7 +1964,7 @@ static void audio_init (void)
     QLIST_INIT (&s->cap_head);
     atexit (audio_atexit);
 
-    s->ts = qemu_new_timer_ns (vm_clock, audio_timer, s);
+    s->ts = timer_new(QEMU_CLOCK_VIRTUAL, SCALE_NS, audio_timer, s);
     if (!s->ts) {
         dolog ("Could not create audio timer\n");
         return;
@@ -2047,14 +2047,14 @@ static void audio_init (void)
     initialized = 1;
 
     QLIST_INIT (&s->card_head);
-    register_savevm ("audio", 0, 1, audio_save, audio_load, s);
+    register_savevm(NULL, "audio", 0, 1, audio_save, audio_load, s);
     audio_reset_timer();
 }
 
 void AUD_register_card (const char *name, QEMUSoundCard *card)
 {
     audio_init ();
-    card->name = qemu_strdup (name);
+    card->name = g_strdup (name);
     memset (&card->entries, 0, sizeof (card->entries));
     QLIST_INSERT_HEAD (&glob_audio_state.card_head, card, entries);
 }
@@ -2062,7 +2062,7 @@ void AUD_register_card (const char *name, QEMUSoundCard *card)
 void AUD_remove_card (QEMUSoundCard *card)
 {
     QLIST_REMOVE (card, entries);
-    qemu_free (card->name);
+    g_free (card->name);
 }
 
 
@@ -2147,11 +2147,11 @@ CaptureVoiceOut *AUD_add_capture (
         return cap;
 
     err3:
-        qemu_free (cap->hw.mix_buf);
+        g_free (cap->hw.mix_buf);
     err2:
-        qemu_free (cap);
+        g_free (cap);
     err1:
-        qemu_free (cb);
+        g_free (cb);
     err0:
         return NULL;
     }
@@ -2165,7 +2165,7 @@ void AUD_del_capture (CaptureVoiceOut *cap, void *cb_opaque)
         if (cb->opaque == cb_opaque) {
             cb->ops.destroy (cb_opaque);
             QLIST_REMOVE (cb, entries);
-            qemu_free (cb);
+            g_free (cb);
 
             if (!cap->cb_head.lh_first) {
                 SWVoiceOut *sw = cap->hw.sw_head.lh_first, *sw1;
@@ -2183,11 +2183,11 @@ void AUD_del_capture (CaptureVoiceOut *cap, void *cb_opaque)
                     }
                     QLIST_REMOVE (sw, entries);
                     QLIST_REMOVE (sc, entries);
-                    qemu_free (sc);
+                    g_free (sc);
                     sw = sw1;
                 }
                 QLIST_REMOVE (cap, entries);
-                qemu_free (cap);
+                g_free (cap);
             }
             return;
         }

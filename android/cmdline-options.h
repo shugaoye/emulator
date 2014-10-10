@@ -93,6 +93,9 @@ CFG_FLAG ( noskin, "same as -no-skin" )
 CFG_FLAG ( dynamic_skin, "dynamically construct a skin of given size, requires -skin WxH option" )
 CFG_PARAM( memory, "<size>", "physical RAM size in MBs" )
 
+OPT_PARAM( accel, "<mode>", "Configure emulation acceleration" )
+OPT_FLAG ( no_accel, "Same as '-accel off'" )
+
 OPT_PARAM( netspeed, "<speed>", "maximum network download/upload speeds" )
 OPT_PARAM( netdelay, "<delay>", "network latency emulation" )
 OPT_FLAG ( netfast, "disable network shaping" )
@@ -147,15 +150,6 @@ OPT_PARAM( shared_net_id, "<number>", "join the shared network, using IP address
 OPT_PARAM( nand_limits, "<nlimits>", "enforce NAND/Flash read/write thresholds" )
 #endif
 
-#ifdef CONFIG_MEMCHECK
-OPT_PARAM( memcheck, "<flags>", "enable memory access checking" )
-#endif  // CONFIG_MEMCHECK
-
-#ifdef CONFIG_STANDALONE_UI
-OPT_PARAM( list_cores, "<host>", "list running core process" )
-OPT_PARAM( attach_core, "<console socket>", "attach to a running core process" )
-#endif  // CONFIG_STANDALONE_UI
-
 OPT_PARAM( gpu, "<mode>", "set hardware OpenGLES emulation mode" )
 
 OPT_PARAM( camera_back, "<mode>", "set emulation mode for a camera facing back" )
@@ -165,6 +159,8 @@ OPT_FLAG( webcam_list, "lists web cameras available for emulation" )
 OPT_PARAM( screen, "<mode>", "set emulated screen mode" )
 
 OPT_FLAG( force_32bit, "always use 32-bit emulator" )
+
+OPT_PARAM(selinux, "<disabled|permissive>", "Set SELinux to either disabled or permissive mode")
 
 #undef CFG_FLAG
 #undef CFG_PARAM

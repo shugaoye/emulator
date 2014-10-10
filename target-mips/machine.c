@@ -1,7 +1,7 @@
 #include "hw/hw.h"
 #include "hw/boards.h"
 
-#include "exec-all.h"
+#include "cpu.h"
 
 static void save_tc(QEMUFile *f, TCState *tc)
 {
@@ -42,7 +42,7 @@ static void save_fpu(QEMUFile *f, CPUMIPSFPUContext *fpu)
 
 void cpu_save(QEMUFile *f, void *opaque)
 {
-    CPUState *env = opaque;
+    CPUMIPSState *env = opaque;
     int i;
 
     /* Save active TC */
@@ -58,6 +58,7 @@ void cpu_save(QEMUFile *f, void *opaque)
 
     /* Save TLB */
     qemu_put_be32s(f, &env->tlb->nb_tlb);
+    qemu_put_be32s(f, &env->tlb->tlb_in_use);
     for(i = 0; i < MIPS_TLB_MAX; i++) {
         uint16_t flags = ((env->tlb->mmu.r4k.tlb[i].G << 10) |
                           (env->tlb->mmu.r4k.tlb[i].C0 << 7) |
@@ -189,7 +190,7 @@ static void load_fpu(QEMUFile *f, CPUMIPSFPUContext *fpu)
 
 int cpu_load(QEMUFile *f, void *opaque, int version_id)
 {
-    CPUState *env = opaque;
+    CPUMIPSState *env = opaque;
     int i;
 
     if (version_id != 3)
@@ -208,6 +209,7 @@ int cpu_load(QEMUFile *f, void *opaque, int version_id)
 
     /* Load TLB */
     qemu_get_be32s(f, &env->tlb->nb_tlb);
+    qemu_get_be32s(f, &env->tlb->tlb_in_use);
     for(i = 0; i < MIPS_TLB_MAX; i++) {
         uint16_t flags;
         uint8_t asid;

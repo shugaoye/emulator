@@ -29,18 +29,20 @@
 #include <sys/mman.h>
 #endif
 #include "config.h"
-#include "monitor.h"
-#include "sysemu.h"
-#include "arch_init.h"
+#include "monitor/monitor.h"
+#include "sysemu/sysemu.h"
+#include "sysemu/arch_init.h"
 #include "audio/audio.h"
 #include "hw/irq.h"
-#include "hw/pci.h"
+#include "hw/pci/pci.h"
 #include "hw/audiodev.h"
-#include "kvm.h"
-#include "migration.h"
-#include "net.h"
-#include "gdbstub.h"
-#include "hw/smbios.h"
+#include "sysemu/kvm.h"
+#include "migration/migration.h"
+#include "migration/qemu-file.h"
+#include "net/net.h"
+#include "exec/gdbstub.h"
+#include "exec/ram_addr.h"
+#include "hw/i386/smbios.h"
 
 #ifdef TARGET_SPARC
 int graphic_width = 1024;
@@ -119,18 +121,19 @@ static int ram_save_block(QEMUFile *f)
     int bytes_sent = 0;
 
     if (!block)
-        block = QLIST_FIRST(&ram_list.blocks);
+        block = QTAILQ_FIRST(&ram_list.blocks);
 
     current_addr = block->offset + offset;
 
     do {
-        if (cpu_physical_memory_get_dirty(current_addr, MIGRATION_DIRTY_FLAG)) {
+        if (cpu_physical_memory_get_dirty(current_addr, TARGET_PAGE_SIZE,
+                                          DIRTY_MEMORY_MIGRATION)) {
             uint8_t *p;
             int cont = (block == last_block) ? RAM_SAVE_FLAG_CONTINUE : 0;
 
             cpu_physical_memory_reset_dirty(current_addr,
-                                            current_addr + TARGET_PAGE_SIZE,
-                                            MIGRATION_DIRTY_FLAG);
+                                            TARGET_PAGE_SIZE,
+                                            DIRTY_MEMORY_MIGRATION);
 
             p = block->host + offset;
 
@@ -160,9 +163,9 @@ static int ram_save_block(QEMUFile *f)
         offset += TARGET_PAGE_SIZE;
         if (offset >= block->length) {
             offset = 0;
-            block = QLIST_NEXT(block, next);
+            block = QTAILQ_NEXT(block, next);
             if (!block)
-                block = QLIST_FIRST(&ram_list.blocks);
+                block = QTAILQ_FIRST(&ram_list.blocks);
         }
 
         current_addr = block->offset + offset;
@@ -182,11 +185,12 @@ static ram_addr_t ram_save_remaining(void)
     RAMBlock *block;
     ram_addr_t count = 0;
 
-    QLIST_FOREACH(block, &ram_list.blocks, next) {
+    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
         ram_addr_t addr;
         for (addr = block->offset; addr < block->offset + block->length;
              addr += TARGET_PAGE_SIZE) {
-            if (cpu_physical_memory_get_dirty(addr, MIGRATION_DIRTY_FLAG)) {
+            if (cpu_physical_memory_get_dirty(addr, TARGET_PAGE_SIZE,
+                                              DIRTY_MEMORY_MIGRATION)) {
                 count++;
             }
         }
@@ -210,7 +214,7 @@ uint64_t ram_bytes_total(void)
     RAMBlock *block;
     uint64_t total = 0;
 
-    QLIST_FOREACH(block, &ram_list.blocks, next)
+    QTAILQ_FOREACH(block, &ram_list.blocks, next)
         total += block->length;
 
     return total;
@@ -233,20 +237,20 @@ static void sort_ram_list(void)
     RAMBlock *block, *nblock, **blocks;
     int n;
     n = 0;
-    QLIST_FOREACH(block, &ram_list.blocks, next) {
+    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
         ++n;
     }
-    blocks = qemu_malloc(n * sizeof *blocks);
+    blocks = g_malloc(n * sizeof *blocks);
     n = 0;
-    QLIST_FOREACH_SAFE(block, &ram_list.blocks, next, nblock) {
+    QTAILQ_FOREACH_SAFE(block, &ram_list.blocks, next, nblock) {
         blocks[n++] = block;
-        QLIST_REMOVE(block, next);
+        QTAILQ_REMOVE(&ram_list.blocks, block, next);
     }
     qsort(blocks, n, sizeof *blocks, block_compar);
     while (--n >= 0) {
-        QLIST_INSERT_HEAD(&ram_list.blocks, blocks[n], next);
+        QTAILQ_INSERT_HEAD(&ram_list.blocks, blocks[n], next);
     }
-    qemu_free(blocks);
+    g_free(blocks);
 }
 
 int ram_save_live(QEMUFile *f, int stage, void *opaque)
@@ -261,8 +265,8 @@ int ram_save_live(QEMUFile *f, int stage, void *opaque)
         return 0;
     }
 
-    if (cpu_physical_sync_dirty_bitmap(0, TARGET_PHYS_ADDR_MAX) != 0) {
-        qemu_file_set_error(f);
+    if (cpu_physical_sync_dirty_bitmap(0, UINT64_MAX) != 0) {
+        qemu_file_set_error(f, -errno);
         return 0;
     }
 
@@ -274,12 +278,13 @@ int ram_save_live(QEMUFile *f, int stage, void *opaque)
         sort_ram_list();
 
         /* Make sure all dirty bits are set */
-        QLIST_FOREACH(block, &ram_list.blocks, next) {
+        QTAILQ_FOREACH(block, &ram_list.blocks, next) {
             for (addr = block->offset; addr < block->offset + block->length;
                  addr += TARGET_PAGE_SIZE) {
-                if (!cpu_physical_memory_get_dirty(addr,
-                                                   MIGRATION_DIRTY_FLAG)) {
-                    cpu_physical_memory_set_dirty(addr);
+                if (!cpu_physical_memory_get_dirty(addr, TARGET_PAGE_SIZE,
+                                                   DIRTY_MEMORY_MIGRATION)) {
+                    cpu_physical_memory_set_dirty_flag(
+                            addr, DIRTY_MEMORY_MIGRATION);
                 }
             }
         }
@@ -289,7 +294,7 @@ int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
         qemu_put_be64(f, ram_bytes_total() | RAM_SAVE_FLAG_MEM_SIZE);
 
-        QLIST_FOREACH(block, &ram_list.blocks, next) {
+        QTAILQ_FOREACH(block, &ram_list.blocks, next) {
             qemu_put_byte(f, strlen(block->idstr));
             qemu_put_buffer(f, (uint8_t *)block->idstr, strlen(block->idstr));
             qemu_put_be64(f, block->length);
@@ -297,7 +302,7 @@ int ram_save_live(QEMUFile *f, int stage, void *opaque)
     }
 
     bytes_transferred_last = bytes_transferred;
-    bwidth = qemu_get_clock_ns(rt_clock);
+    bwidth = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
     while (!qemu_file_rate_limit(f)) {
         int bytes_sent;
@@ -309,7 +314,7 @@ int ram_save_live(QEMUFile *f, int stage, void *opaque)
         }
     }
 
-    bwidth = qemu_get_clock_ns(rt_clock) - bwidth;
+    bwidth = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - bwidth;
     bwidth = (bytes_transferred - bytes_transferred_last) / bwidth;
 
     /* if we haven't transferred anything this round, force expected_time to a
@@ -357,7 +362,7 @@ static inline void *host_from_stream_offset(QEMUFile *f,
     qemu_get_buffer(f, (uint8_t *)id, len);
     id[len] = 0;
 
-    QLIST_FOREACH(block, &ram_list.blocks, next) {
+    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
         if (!strncmp(id, block->idstr, sizeof(id)))
             return block->host + offset;
     }
@@ -401,7 +406,7 @@ int ram_load(QEMUFile *f, void *opaque, int version_id)
                     id[len] = 0;
                     length = qemu_get_be64(f);
 
-                    QLIST_FOREACH(block, &ram_list.blocks, next) {
+                    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
                         if (!strncmp(id, block->idstr, sizeof(id))) {
                             if (block->length != length)
                                 return -EINVAL;
@@ -448,7 +453,7 @@ int ram_load(QEMUFile *f, void *opaque, int version_id)
 
             qemu_get_buffer(f, host, TARGET_PAGE_SIZE);
         }
-        if (qemu_file_has_error(f)) {
+        if (qemu_file_get_error(f)) {
             return -EIO;
         }
     } while (!(flags & RAM_SAVE_FLAG_EOS));
@@ -456,11 +461,6 @@ int ram_load(QEMUFile *f, void *opaque, int version_id)
     return 0;
 }
 #endif
-
-void qemu_service_io(void)
-{
-    qemu_notify_event();
-}
 
 #ifdef HAS_AUDIO
 struct soundhw {

@@ -18,10 +18,11 @@
 #include "version.h"
 #endif
 #include "config-host.h"
+#include <stdint.h>
 #include "slirp_config.h"
 
 #include <stddef.h>
-#include "sockets.h"
+#include "android/sockets.h"
 
 #ifdef _WIN32
 # include <inttypes.h>

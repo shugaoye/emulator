@@ -301,7 +301,7 @@ void *st_rate_start (int inrate, int outrate)
     struct rate *rate = audio_calloc (AUDIO_FUNC, 1, sizeof (*rate));
 
     if (!rate) {
-        dolog ("Could not allocate resampler (%zu bytes)\n", sizeof (*rate));
+        dolog ("Could not allocate resampler (%u bytes)\n", (int)sizeof (*rate));
         return NULL;
     }
 
@@ -326,7 +326,7 @@ void *st_rate_start (int inrate, int outrate)
 
 void st_rate_stop (void *opaque)
 {
-    qemu_free (opaque);
+    g_free (opaque);
 }
 
 void mixeng_clear (struct st_sample *buf, int len)

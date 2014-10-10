@@ -2,7 +2,11 @@
 # to declare the SDL-related sources, compiler flags and libraries
 #
 
-SDL_CFLAGS :=
+SDL_OLD_LOCAL_PATH := $(LOCAL_PATH)
+
+LOCAL_PATH := $(call my-dir)
+
+SDL_CFLAGS := -I$(LOCAL_PATH)/include -I$(LOCAL_PATH)/configs/$(QEMU_HOST_TAG)
 SDL_LDLIBS :=
 SDL_STATIC_LIBRARIES :=
 
@@ -47,8 +51,17 @@ ifeq ($(HOST_OS),darwin)
     SDL_CONFIG_MAIN_MACOSX := yes
 
     SDL_CFLAGS += -D_GNU_SOURCE=1 -DTHREAD_SAFE
-    FRAMEWORKS := OpenGL Cocoa QuickTime ApplicationServices Carbon IOKit
+    FRAMEWORKS := OpenGL Cocoa ApplicationServices Carbon IOKit
     SDL_LDLIBS += $(FRAMEWORKS:%=-Wl,-framework,%)
+
+    # SDK 10.6+ deprecates __dyld_func_lookup required by dlcompat_init_func
+    # in SDL_dlcompat.o this module depends.  Instruct linker to resolve it
+    # at runtime.
+    OSX_VERSION_MAJOR := $(shell echo $(mac_sdk_version) | cut -d . -f 2)
+    OSX_VERSION_MAJOR_GREATER_THAN_OR_EQUAL_TO_6 := $(shell [ $(OSX_VERSION_MAJOR) -ge 6 ] && echo true)
+    ifeq ($(OSX_VERSION_MAJOR_GREATER_THAN_OR_EQUAL_TO_6),true)
+        LOCAL_LDLIBS += -Wl,-undefined,dynamic_lookup
+    endif
 endif
 
 ifeq ($(HOST_OS),windows)
@@ -88,7 +101,7 @@ SRCS += stdlib/SDL_getenv.c \
 
 SRCS += cpuinfo/SDL_cpuinfo.c
 
-SDL_SOURCES += $(SRCS:%=$(SDL_DIR)/src/%)
+SDL_SOURCES += $(SRCS:%=src/%)
 
 # the LoadSO sources
 #
@@ -108,7 +121,7 @@ ifeq ($(SDL_CONFIG_LOADSO_WIN32),yes)
   SRCS += win32/SDL_sysloadso.c
 endif
 
-SDL_SOURCES += $(SRCS:%=$(SDL_DIR)/src/loadso/%)
+SDL_SOURCES += $(SRCS:%=src/loadso/%)
 
 # the Thread sources
 #
@@ -128,7 +141,7 @@ ifeq ($(SDL_CONFIG_THREAD_WIN32),yes)
           win32/SDL_systhread.c
 endif
 
-SDL_SOURCES += $(SRCS:%=$(SDL_DIR)/src/thread/%)
+SDL_SOURCES += $(SRCS:%=src/thread/%)
 
 # the Timer sources
 #
@@ -143,7 +156,7 @@ ifeq ($(SDL_CONFIG_TIMER_WIN32),yes)
   SRCS += win32/SDL_systimer.c
 endif
 
-SDL_SOURCES += $(SRCS:%=$(SDL_DIR)/src/timer/%)
+SDL_SOURCES += $(SRCS:%=src/timer/%)
 
 # the Video sources
 #
@@ -216,7 +229,17 @@ ifeq ($(SDL_CONFIG_VIDEO_X11_XV),yes)
   SRCS += Xext/Xv/Xv.c
 endif
 
-SDL_SOURCES += $(SRCS:%=$(SDL_DIR)/src/video/%)
+SDL_SOURCES += $(SRCS:%=src/video/%)
+
+$(call start-emulator-library,emulator_libSDL)
+LOCAL_SRC_FILES := $(SDL_SOURCES)
+LOCAL_CFLAGS += $(SDL_CFLAGS)
+$(call end-emulator-library)
+
+$(call start-emulator64-library,emulator_lib64SDL)
+LOCAL_SRC_FILES := $(SDL_SOURCES)
+LOCAL_CFLAGS += $(SDL_CFLAGS)
+$(call end-emulator-library)
 
 ## Build libSDLmain
 ##
@@ -235,4 +258,17 @@ ifeq ($(SDL_CONFIG_MAIN_WIN32),yes)
   SRCS += win32/SDL_win32_main.c
 endif
 
-SDLMAIN_SOURCES := $(SRCS:%=$(SDL_DIR)/src/main/%)
+SDLMAIN_SOURCES := $(SRCS:%=src/main/%)
+
+$(call start-emulator-library,emulator_libSDLmain)
+LOCAL_CFLAGS += $(SDL_CFLAGS)
+LOCAL_SRC_FILES := $(SDLMAIN_SOURCES)
+$(call end-emulator-library)
+
+$(call start-emulator64-library,emulator_lib64SDLmain)
+LOCAL_CFLAGS := $(SDL_CFLAGS)
+LOCAL_SRC_FILES := $(SDLMAIN_SOURCES)
+$(call end-emulator-library)
+
+# Restore LOCAL_PATH
+LOCAL_PATH := $(SDL_OLD_LOCAL_PATH)

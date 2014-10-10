@@ -16,10 +16,10 @@
 #include "android/utils/bufprint.h"
 #include "android/looper.h"
 #include "hw/hw.h"
-#include "hw/goldfish_pipe.h"
-#include "qemu-char.h"
-#include "charpipe.h"
-#include "cbuffer.h"
+#include "hw/android/goldfish/pipe.h"
+#include "sysemu/char.h"
+#include "android/charpipe.h"
+#include "android/cbuffer.h"
 #include "utils/panic.h"
 
 #define  D(...)    VERBOSE_PRINT(qemud,__VA_ARGS__)
@@ -48,8 +48,9 @@
  */
 #define QEMUD_SAVE_VERSION 2
 
+#ifndef min
 #define min(a, b) (((a) < (b)) ? (a) : (b))
-
+#endif
 
 /* define SUPPORT_LEGACY_QEMUD to 1 if you want to support
  * talking to a legacy qemud daemon. See docs/ANDROID-QEMUD.TXT
@@ -1253,7 +1254,10 @@ qemud_service_load(  QEMUFile*  f, QemudService*  current_services  )
 
     /* reconfigure service as required */
     sv->max_clients = qemu_get_be32(f);
-    sv->num_clients = qemu_get_be32(f);
+    sv->num_clients = 0;
+
+    // NOTE: The number of clients saved cannot be verified now.
+    (void) qemu_get_be32(f);
 
     /* load service specific data */
     int ret;
@@ -1542,8 +1546,6 @@ static void
 qemud_multiplexer_init( QemudMultiplexer*  mult,
                         CharDriverState*   serial_cs )
 {
-    QemudClient*  control;
-
     /* initialize serial handler */
     qemud_serial_init( mult->serial,
                        serial_cs,
@@ -1551,13 +1553,13 @@ qemud_multiplexer_init( QemudMultiplexer*  mult,
                        mult );
 
     /* setup listener for channel 0 */
-    control = qemud_client_alloc( 0,
-                                  NULL,
-                                  mult,
-                                  qemud_multiplexer_control_recv,
-                                  NULL, NULL, NULL,
-                                  mult->serial,
-                                  &mult->clients );
+    qemud_client_alloc(0,
+                       NULL,
+                       mult,
+                       qemud_multiplexer_control_recv,
+                       NULL, NULL, NULL,
+                       mult->serial,
+                       &mult->clients );
 }
 
 /* the global multiplexer state */
@@ -1839,7 +1841,6 @@ qemud_load(QEMUFile *f, void* opaque, int version)
         return ret;
     if ((ret = qemud_load_clients(f, m, version)))
         return ret;
-
     return 0;
 }
 
@@ -1917,7 +1918,7 @@ _qemudPipe_init(void* hwpipe, void* _looper, const char* args)
      * service name wit ':'. Separate service name from the client param. */
     client_args = strchr(args, ':');
     if (client_args != NULL) {
-        srv_name_len = min(client_args - args, sizeof(service_name) - 1);
+        srv_name_len = min(client_args - args, (intptr_t)sizeof(service_name) - 1);
         client_args++;  // Past the ':'
         if (*client_args == '\0') {
             /* No actual parameters. */
@@ -2255,8 +2256,13 @@ _android_qemud_serial_init(void)
 
     qemud_multiplexer_init(_multiplexer, cs);
 
-    register_savevm( "qemud", 0, QEMUD_SAVE_VERSION,
-                      qemud_save, qemud_load, _multiplexer);
+    register_savevm(NULL,
+                    "qemud",
+                    0,
+                    QEMUD_SAVE_VERSION,
+                    qemud_save,
+                    qemud_load,
+                    _multiplexer);
 }
 
 extern void

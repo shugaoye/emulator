@@ -18,8 +18,8 @@
 #include "android/hw-qemud.h"
 #include "android/globals.h"
 #include "hw/hw.h"
-#include "qemu-char.h"
-#include "qemu-timer.h"
+#include "sysemu/char.h"
+#include "qemu/timer.h"
 #include "android/sensors-port.h"
 
 #define  E(...)    derror(__VA_ARGS__)
@@ -211,8 +211,8 @@ _hwSensorClient_free( HwSensorClient*  cl )
     }
     /* remove timer, if any */
     if (cl->timer) {
-        qemu_del_timer(cl->timer);
-        qemu_free_timer(cl->timer);
+        timer_del(cl->timer);
+        timer_free(cl->timer);
         cl->timer = NULL;
     }
     AFREE(cl);
@@ -232,7 +232,7 @@ _hwSensorClient_new( HwSensors*  sensors )
     cl->sensors     = sensors;
     cl->enabledMask = 0;
     cl->delay_ms    = 800;
-    cl->timer       = qemu_new_timer_ns(vm_clock, _hwSensorClient_tick, cl);
+    cl->timer       = timer_new(QEMU_CLOCK_VIRTUAL, SCALE_NS, _hwSensorClient_tick, cl);
 
     cl->next         = sensors->clients;
     sensors->clients = cl;
@@ -337,7 +337,7 @@ _hwSensorClient_tick( void*  opaque )
         _hwSensorClient_send(cl, (uint8_t*) buffer, strlen(buffer));
     }
 
-    now_ns = qemu_get_clock_ns(vm_clock);
+    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     snprintf(buffer, sizeof buffer, "sync:%" PRId64, now_ns/1000);
     _hwSensorClient_send(cl, (uint8_t*)buffer, strlen(buffer));
@@ -352,7 +352,7 @@ _hwSensorClient_tick( void*  opaque )
         delay = 20;
 
     delay *= 1000000LL;  /* convert to nanoseconds */
-    qemu_mod_timer(cl->timer, now_ns + delay);
+    timer_mod(cl->timer, now_ns + delay);
 }
 
 /* handle incoming messages from the HAL module */
@@ -432,7 +432,7 @@ _hwSensorClient_receive( HwSensorClient*  cl, uint8_t*  msg, int  msglen )
         else
             cl->enabledMask &= ~(1 << id);
 
-        if (cl->enabledMask != oldEnabledMask) {
+        if (cl->enabledMask != (uint32_t)oldEnabledMask) {
             D("%s: %s %s sensor", __FUNCTION__,
                 (cl->enabledMask & (1 << id))  ? "enabling" : "disabling",  msg);
         }
@@ -461,7 +461,7 @@ _hwSensorClient_save( QEMUFile*  f, QemudClient*  client, void*  opaque  )
 
     qemu_put_be32(f, sc->delay_ms);
     qemu_put_be32(f, sc->enabledMask);
-    qemu_put_timer(f, sc->timer);
+    timer_put(f, sc->timer);
 }
 
 /* Loads sensor-specific client data from snapshot */
@@ -472,7 +472,7 @@ _hwSensorClient_load( QEMUFile*  f, QemudClient*  client, void*  opaque  )
 
     sc->delay_ms = qemu_get_be32(f);
     sc->enabledMask = qemu_get_be32(f);
-    qemu_get_timer(f, sc->timer);
+    timer_get(f, sc->timer);
 
     return 0;
 }
@@ -568,7 +568,7 @@ _hwSensors_load( QEMUFile*  f, QemudService*  s, void*  opaque)
 
     /* load sensor state */
     AndroidSensor i;
-    for (i = 0 ; i < num_sensors; i++) {
+    for (i = 0 ; i < (AndroidSensor)num_sensors; i++) {
         Sensor* s = &h->sensors[i];
         s->enabled = qemu_get_be32(f);
 

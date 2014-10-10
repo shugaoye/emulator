@@ -11,6 +11,7 @@
 ** GNU General Public License for more details.
 */
 
+#include "exec/ram_addr.h"
 #include "target-i386/hax-i386.h"
 
 /*
@@ -50,11 +51,13 @@ static int hax_open_device(hax_fd *fd)
 hax_fd hax_mod_open(void)
 {
     int ret;
-    hax_fd fd;
+    hax_fd fd = INVALID_HANDLE_VALUE;
 
     ret = hax_open_device(&fd);
-    if (ret != 0)
+    if (ret != 0) {
         dprint("Open HAX device failed\n");
+        return INVALID_HANDLE_VALUE;
+    }
 
     return fd;
 }
@@ -85,15 +88,16 @@ int hax_populate_ram(uint64_t va, uint32_t size)
       (LPOVERLAPPED) NULL);
 
     if (!ret) {
-        dprint("Failed to allocate %x memory\n", size);
-        return ret;
+        dprint("HAX: Failed to allocate %x memory (address %llx)\n", 
+               size, (unsigned long long)va);
+        return -1;
     }
 
     return 0;
 }
 
 
-int hax_set_phys_mem(target_phys_addr_t start_addr, ram_addr_t size, ram_addr_t phys_offset)
+int hax_set_phys_mem(hwaddr start_addr, ram_addr_t size, ram_addr_t phys_offset)
 {
     struct hax_set_ram_info info, *pinfo = &info;
     ram_addr_t flags = phys_offset & ~TARGET_PAGE_MASK;
@@ -115,7 +119,7 @@ int hax_set_phys_mem(target_phys_addr_t start_addr, ram_addr_t size, ram_addr_t 
 
     info.pa_start = start_addr;
     info.size = size;
-    info.va = (uint64_t)qemu_get_ram_ptr(phys_offset);
+    info.va = (uint64_t)(uintptr_t)qemu_get_ram_ptr(phys_offset);
     info.flags = (flags & IO_MEM_ROM) ? 1 : 0;
 
     hDeviceVM = hax_global.vm->fd;
@@ -203,7 +207,7 @@ static char *hax_vm_devfs_string(int vm_id)
         return NULL;
     }
 
-    name = qemu_strdup("\\\\.\\hax_vmxx");
+    name = g_strdup("\\\\.\\hax_vmxx");
     if (!name)
         return NULL;
     sprintf(name, "\\\\.\\hax_vm%02d", vm_id);
@@ -220,7 +224,7 @@ static char *hax_vcpu_devfs_string(int vm_id, int vcpu_id)
         dprint("Too big vm id %x or vcpu id %x\n", vm_id, vcpu_id);
         return NULL;
     }
-    name = qemu_strdup("\\\\.\\hax_vmxx_vcpuxx");
+    name = g_strdup("\\\\.\\hax_vmxx_vcpuxx");
     if (!name)
         return NULL;
     sprintf(name, "\\\\.\\hax_vm%02d_vcpu%02d", vm_id, vcpu_id);
@@ -275,7 +279,7 @@ hax_fd hax_host_open_vm(struct hax_state *hax, int vm_id)
     if (hDeviceVM == INVALID_HANDLE_VALUE)
         dprint("Open the vm devcie error:%s, ec:%d\n", vm_name, GetLastError());
 
-    qemu_free(vm_name);
+    g_free(vm_name);
     return hDeviceVM;
 }
 
@@ -344,7 +348,7 @@ hax_fd hax_host_open_vcpu(int vmid, int vcpuid)
 
     if (hDeviceVCPU == INVALID_HANDLE_VALUE)
         dprint("Failed to open the vcpu devfs\n");
-    qemu_free(devfs_path);
+    g_free(devfs_path);
     return hDeviceVCPU;
 }
 
@@ -373,8 +377,8 @@ int hax_host_setup_vcpu_channel(struct hax_vcpu_state *vcpu)
         ret = -EINVAL;
         return ret;
     }
-    vcpu->tunnel = (struct hax_tunnel *)(info.va);
-    vcpu->iobuf = (unsigned char *)(info.io_va);
+    vcpu->tunnel = (struct hax_tunnel *)(uintptr_t)(info.va);
+    vcpu->iobuf = (unsigned char *)(uintptr_t)(info.io_va);
     return 0;
 }
 
@@ -396,14 +400,14 @@ int hax_vcpu_run(struct hax_vcpu_state* vcpu)
         return 0;
 }
 
-int hax_sync_fpu(CPUState *env, struct fx_layout *fl, int set)
+int hax_sync_fpu(CPUState *cpu, struct fx_layout *fl, int set)
 {
     int ret;
     hax_fd fd;
     HANDLE hDeviceVCPU;
     DWORD dSize = 0;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (hax_invalid_fd(fd))
         return -1;
 
@@ -429,14 +433,14 @@ int hax_sync_fpu(CPUState *env, struct fx_layout *fl, int set)
         return 0;
 }
 
-int hax_sync_msr(CPUState *env, struct hax_msr_data *msrs, int set)
+int hax_sync_msr(CPUState *cpu, struct hax_msr_data *msrs, int set)
 {
     int ret;
     hax_fd fd;
     HANDLE hDeviceVCPU;
     DWORD dSize = 0;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (hax_invalid_fd(fd))
         return -1;
     hDeviceVCPU = fd;
@@ -461,14 +465,14 @@ int hax_sync_msr(CPUState *env, struct hax_msr_data *msrs, int set)
         return 0;
 }
 
-int hax_sync_vcpu_state(CPUState *env, struct vcpu_state_t *state, int set)
+int hax_sync_vcpu_state(CPUState *cpu, struct vcpu_state_t *state, int set)
 {
     int ret;
     hax_fd fd;
     HANDLE hDeviceVCPU;
     DWORD dSize;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (hax_invalid_fd(fd))
         return -1;
 
@@ -494,14 +498,14 @@ int hax_sync_vcpu_state(CPUState *env, struct vcpu_state_t *state, int set)
         return 0;
 }
 
-int hax_inject_interrupt(CPUState *env, int vector)
+int hax_inject_interrupt(CPUState *cpu, int vector)
 {
     int ret;
     hax_fd fd;
     HANDLE hDeviceVCPU;
     DWORD dSize;
 
-    fd = hax_vcpu_get_fd(env);
+    fd = hax_vcpu_get_fd(cpu);
     if (hax_invalid_fd(fd))
         return -1;
 

@@ -10,13 +10,12 @@
 ** GNU General Public License for more details.
 */
 #include "android/skin/file.h"
+
+#include "android/skin/keycode.h"
 #include "android/utils/path.h"
-#include "android/charmap.h"
 #include "android/utils/bufprint.h"
 #include "android/utils/system.h"
 #include "android/utils/debug.h"
-
-//#include "qemu-common.h"
 
 /** UTILITY ROUTINES
  **/
@@ -78,13 +77,17 @@ skin_background_init_from( SkinBackground*  background,
  **/
 
 static void
-skin_display_done( SkinDisplay*  display )
+skin_display_done(SkinDisplay*  display)
 {
-    qframebuffer_done( display->qfbuff );
+    if (display->framebuffer_funcs) {
+        display->framebuffer_funcs->free_framebuffer(display->framebuffer);
+    }
 }
 
 static int
-skin_display_init_from( SkinDisplay*  display, AConfig*  node )
+skin_display_init_from(SkinDisplay* display,
+                       AConfig* node,
+                       const SkinFramebufferFuncs* fb_funcs)
 {
     display->rect.pos.x  = aconfig_int(node, "x", 0);
     display->rect.pos.y  = aconfig_int(node, "y", 0);
@@ -94,10 +97,15 @@ skin_display_init_from( SkinDisplay*  display, AConfig*  node )
     display->bpp         = aconfig_int(node, "bpp", 16);
 
     display->valid = ( display->rect.size.w > 0 && display->rect.size.h > 0 );
-
-    if (display->valid) {
+    display->framebuffer_funcs = fb_funcs;
+    if (display->valid && fb_funcs) {
         SkinRect  r;
         skin_rect_rotate( &r, &display->rect, -display->rotation );
+        display->framebuffer = fb_funcs->create_framebuffer(
+                r.size.w,
+                r.size.h,
+                display->bpp);
+#if 0
         qframebuffer_init( display->qfbuff,
                            r.size.w,
                            r.size.h,
@@ -106,115 +114,13 @@ skin_display_init_from( SkinDisplay*  display, AConfig*  node )
                                               : QFRAME_BUFFER_RGB565 );
 
         qframebuffer_fifo_add( display->qfbuff );
+#endif
     }
     return display->valid ? 0 : -1;
 }
 
 /** SKIN BUTTON
  **/
-
-typedef struct
-{
-    const char*     name;
-    AndroidKeyCode  code;
-} KeyInfo;
-
-static KeyInfo  _keyinfo_table[] = {
-    { "dpad-up",      kKeyCodeDpadUp },
-    { "dpad-down",    kKeyCodeDpadDown },
-    { "dpad-left",    kKeyCodeDpadLeft },
-    { "dpad-right",   kKeyCodeDpadRight },
-    { "dpad-center",  kKeyCodeDpadCenter },
-    { "soft-left",    kKeyCodeSoftLeft },
-    { "soft-right",   kKeyCodeSoftRight },
-    { "search",       kKeyCodeSearch },
-    { "camera",       kKeyCodeCamera },
-    { "volume-up",    kKeyCodeVolumeUp },
-    { "volume-down",  kKeyCodeVolumeDown },
-    { "power",        kKeyCodePower },
-    { "home",         kKeyCodeHome },
-    { "back",         kKeyCodeBack },
-    { "del",          kKeyCodeDel },
-    { "0",            kKeyCode0 },
-    { "1",            kKeyCode1 },
-    { "2",            kKeyCode2 },
-    { "3",            kKeyCode3 },
-    { "4",            kKeyCode4 },
-    { "5",            kKeyCode5 },
-    { "6",            kKeyCode6 },
-    { "7",            kKeyCode7 },
-    { "8",            kKeyCode8 },
-    { "9",            kKeyCode9 },
-    { "star",         kKeyCodeStar },
-    { "pound",        kKeyCodePound },
-    { "phone-dial",   kKeyCodeCall },
-    { "phone-hangup", kKeyCodeEndCall },
-    { "q",            kKeyCodeQ },
-    { "w",            kKeyCodeW },
-    { "e",            kKeyCodeE },
-    { "r",            kKeyCodeR },
-    { "t",            kKeyCodeT },
-    { "y",            kKeyCodeY },
-    { "u",            kKeyCodeU },
-    { "i",            kKeyCodeI },
-    { "o",            kKeyCodeO },
-    { "p",            kKeyCodeP },
-    { "a",            kKeyCodeA },
-    { "s",            kKeyCodeS },
-    { "d",            kKeyCodeD },
-    { "f",            kKeyCodeF },
-    { "g",            kKeyCodeG },
-    { "h",            kKeyCodeH },
-    { "j",            kKeyCodeJ },
-    { "k",            kKeyCodeK },
-    { "l",            kKeyCodeL },
-    { "DEL",          kKeyCodeDel },
-    { "z",            kKeyCodeZ },
-    { "x",            kKeyCodeX },
-    { "c",            kKeyCodeC },
-    { "v",            kKeyCodeV },
-    { "b",            kKeyCodeB },
-    { "n",            kKeyCodeN },
-    { "m",            kKeyCodeM },
-    { "COMMA",        kKeyCodeComma },
-    { "PERIOD",       kKeyCodePeriod },
-    { "ENTER",        kKeyCodeNewline },
-    { "AT",           kKeyCodeAt },
-    { "SPACE",        kKeyCodeSpace },
-    { "SLASH",        kKeyCodeSlash },
-    { "CAP",          kKeyCodeCapLeft },
-    { "SYM",          kKeyCodeSym },
-    { "ALT",          kKeyCodeAltLeft },
-    { "ALT2",         kKeyCodeAltRight },
-    { "CAP2",         kKeyCodeCapRight },
-    { "tv",           kKeyCodeTV },
-    { "epg",          kKeyCodeEPG },
-    { "dvr",          kKeyCodeDVR },
-    { "prev",         kKeyCodePrevious },
-    { "next",         kKeyCodeNext },
-    { "play",         kKeyCodePlay },
-    { "pause",        kKeyCodePause },
-    { "stop",         kKeyCodeStop },
-    { "rev",          kKeyCodeRewind },
-    { "ffwd",         kKeyCodeFastForward },
-    { "bookmarks",    kKeyCodeBookmarks },
-    { "window",       kKeyCodeCycleWindows },
-    { "channel-up",   kKeyCodeChannelUp },
-    { "channel-down", kKeyCodeChannelDown },
-    { 0, 0 },
-};
-
-static unsigned
-keyinfo_lookup_code(const char *name)
-{
-    KeyInfo *ki = _keyinfo_table;
-    while(ki->name) {
-        if(!strcmp(name, ki->name))
-            return ki->code;
-        ki++;
-    }
-    return 0;
-}
 
 
 static void
@@ -226,8 +132,109 @@ skin_button_free( SkinButton*  button )
     }
 }
 
+static unsigned translate_button_name(const char* name) {
+    typedef struct {
+        const char*     name;
+        SkinKeyCode  code;
+    } KeyInfo;
+
+    static const KeyInfo keyinfo_table[] = {
+        { "dpad-up",      kKeyCodeDpadUp },
+        { "dpad-down",    kKeyCodeDpadDown },
+        { "dpad-left",    kKeyCodeDpadLeft },
+        { "dpad-right",   kKeyCodeDpadRight },
+        { "dpad-center",  kKeyCodeDpadCenter },
+        { "soft-left",    kKeyCodeSoftLeft },
+        { "soft-right",   kKeyCodeSoftRight },
+        { "search",       kKeyCodeSearch },
+        { "camera",       kKeyCodeCamera },
+        { "volume-up",    kKeyCodeVolumeUp },
+        { "volume-down",  kKeyCodeVolumeDown },
+        { "power",        kKeyCodePower },
+        { "home",         kKeyCodeHome },
+        { "back",         kKeyCodeBack },
+        { "del",          kKeyCodeDel },
+        { "0",            kKeyCode0 },
+        { "1",            kKeyCode1 },
+        { "2",            kKeyCode2 },
+        { "3",            kKeyCode3 },
+        { "4",            kKeyCode4 },
+        { "5",            kKeyCode5 },
+        { "6",            kKeyCode6 },
+        { "7",            kKeyCode7 },
+        { "8",            kKeyCode8 },
+        { "9",            kKeyCode9 },
+        { "star",         kKeyCodeStar },
+        { "pound",        kKeyCodePound },
+        { "phone-dial",   kKeyCodeCall },
+        { "phone-hangup", kKeyCodeEndCall },
+        { "q",            kKeyCodeQ },
+        { "w",            kKeyCodeW },
+        { "e",            kKeyCodeE },
+        { "r",            kKeyCodeR },
+        { "t",            kKeyCodeT },
+        { "y",            kKeyCodeY },
+        { "u",            kKeyCodeU },
+        { "i",            kKeyCodeI },
+        { "o",            kKeyCodeO },
+        { "p",            kKeyCodeP },
+        { "a",            kKeyCodeA },
+        { "s",            kKeyCodeS },
+        { "d",            kKeyCodeD },
+        { "f",            kKeyCodeF },
+        { "g",            kKeyCodeG },
+        { "h",            kKeyCodeH },
+        { "j",            kKeyCodeJ },
+        { "k",            kKeyCodeK },
+        { "l",            kKeyCodeL },
+        { "DEL",          kKeyCodeDel },
+        { "z",            kKeyCodeZ },
+        { "x",            kKeyCodeX },
+        { "c",            kKeyCodeC },
+        { "v",            kKeyCodeV },
+        { "b",            kKeyCodeB },
+        { "n",            kKeyCodeN },
+        { "m",            kKeyCodeM },
+        { "COMMA",        kKeyCodeComma },
+        { "PERIOD",       kKeyCodePeriod },
+        { "ENTER",        kKeyCodeNewline },
+        { "AT",           kKeyCodeAt },
+        { "SPACE",        kKeyCodeSpace },
+        { "SLASH",        kKeyCodeSlash },
+        { "CAP",          kKeyCodeCapLeft },
+        { "SYM",          kKeyCodeSym },
+        { "ALT",          kKeyCodeAltLeft },
+        { "ALT2",         kKeyCodeAltRight },
+        { "CAP2",         kKeyCodeCapRight },
+        { "tv",           kKeyCodeTV },
+        { "epg",          kKeyCodeEPG },
+        { "dvr",          kKeyCodeDVR },
+        { "prev",         kKeyCodePrevious },
+        { "next",         kKeyCodeNext },
+        { "play",         kKeyCodePlay },
+        { "pause",        kKeyCodePause },
+        { "stop",         kKeyCodeStop },
+        { "rev",          kKeyCodeRewind },
+        { "ffwd",         kKeyCodeFastForward },
+        { "bookmarks",    kKeyCodeBookmarks },
+        { "window",       kKeyCodeCycleWindows },
+        { "channel-up",   kKeyCodeChannelUp },
+        { "channel-down", kKeyCodeChannelDown },
+        { 0, 0 },
+    };
+
+    const KeyInfo *ki = keyinfo_table;
+    while(ki->name) {
+        if(!strcmp(name, ki->name))
+            return ki->code;
+        ki++;
+    }
+    return 0;
+}
+
 static SkinButton*
-skin_button_create_from( AConfig*   node, const char*  basepath )
+skin_button_create_from(AConfig* node,
+                        const char* basepath)
 {
     SkinButton*  button;
     ANEW0(button);
@@ -251,9 +258,10 @@ skin_button_create_from( AConfig*   node, const char*  basepath )
         button->rect.size.w = skin_image_w( button->image );
         button->rect.size.h = skin_image_h( button->image );
 
-        button->keycode = keyinfo_lookup_code( button->name );
+        button->keycode = translate_button_name(button->name);
         if (button->keycode == 0) {
-            dprint( "Warning: skin file button uses unknown key name '%s'", button->name );
+            dprint("Warning: skin file button uses unknown key name '%s'",
+                   button->name);
         }
     }
     return button;
@@ -311,7 +319,9 @@ skin_location_create_from_v2( AConfig*  node, SkinPart*  parts )
 }
 
 static SkinPart*
-skin_part_create_from_v1( AConfig*  root, const char*  basepath )
+skin_part_create_from_v1(AConfig* root,
+                         const char* basepath,
+                         const SkinFramebufferFuncs* fb_funcs)
 {
     SkinPart*  part;
     AConfig*  node;
@@ -326,13 +336,14 @@ skin_part_create_from_v1( AConfig*  root, const char*  basepath )
 
     node = aconfig_find(root, "display");
     if (node)
-        skin_display_init_from(part->display, node);
+        skin_display_init_from(part->display, node, fb_funcs);
 
     node = aconfig_find(root, "button");
     if (node) {
         for (node = node->first_child; node != NULL; node = node->next)
         {
-            SkinButton*  button = skin_button_create_from(node, basepath);
+            SkinButton*  button = skin_button_create_from(
+                    node, basepath);
 
             if (button != NULL) {
                 button->next  = part->buttons;
@@ -362,7 +373,9 @@ skin_part_create_from_v1( AConfig*  root, const char*  basepath )
 }
 
 static SkinPart*
-skin_part_create_from_v2( AConfig*  root, const char*  basepath )
+skin_part_create_from_v2(AConfig* root,
+                         const char* basepath,
+                         const SkinFramebufferFuncs* fb_funcs)
 {
     SkinPart*  part;
     AConfig*  node;
@@ -377,13 +390,14 @@ skin_part_create_from_v2( AConfig*  root, const char*  basepath )
 
     node = aconfig_find(root, "display");
     if (node)
-        skin_display_init_from(part->display, node);
+        skin_display_init_from(part->display, node, fb_funcs);
 
     node = aconfig_find(root, "buttons");
     if (node) {
         for (node = node->first_child; node != NULL; node = node->next)
         {
-            SkinButton*  button = skin_button_create_from(node, basepath);
+            SkinButton*  button = skin_button_create_from(
+                    node, basepath);
 
             if (button != NULL) {
                 button->next  = part->buttons;
@@ -422,6 +436,9 @@ skin_layout_free( SkinLayout*  layout )
             AFREE(loc);
         SKIN_LAYOUT_LOOP_END
         layout->locations = NULL;
+        if (layout->onion_image) {
+          skin_image_unref( &layout->onion_image );
+        }
         AFREE(layout);
     }
 }
@@ -439,7 +456,7 @@ skin_layout_get_display( SkinLayout*  layout )
 }
 
 SkinRotation
-skin_layout_get_dpad_rotation( SkinLayout*  layout )
+skin_layout_get_dpad_rotation(SkinLayout* layout)
 {
     if (layout->has_dpad_rotation)
         return layout->dpad_rotation;
@@ -497,7 +514,9 @@ skin_layout_event_decode( const char*  event, int  *ptype, int  *pcode, int *pva
 }
 
 static SkinLayout*
-skin_layout_create_from_v2( AConfig*  root, SkinPart*  parts )
+skin_layout_create_from_v2(AConfig* root,
+                           SkinPart* parts,
+                           const char* basepath)
 {
     SkinLayout*    layout;
     int            width, height;
@@ -531,6 +550,20 @@ skin_layout_create_from_v2( AConfig*  root, SkinPart*  parts )
         layout->has_dpad_rotation = 1;
     }
 
+    node = aconfig_find( root, "onion" );
+    if (node != NULL) {
+        const char* img = aconfig_str(node, "image", NULL);
+        layout->onion_image = skin_image_find_in( basepath, img );
+        if (layout->onion_image == SKIN_IMAGE_NONE) {
+            layout->onion_image = NULL;
+        }
+        // In layout file, alpha is specified in range 0-100. Convert to
+        // internal range 0-256 with default=128.
+        int alpha = aconfig_int( node, "alpha", 50 );
+        layout->onion_alpha = (256*alpha)/100;
+        layout->onion_rotation = aconfig_int( node, "rotation", 0 );
+    }
+
     for (node = root->first_child; node; node = node->next)
     {
         if (!memcmp(node->name, "part", 4)) {
@@ -560,7 +593,10 @@ Fail:
  **/
 
 static int
-skin_file_load_from_v1( SkinFile*  file, AConfig*  aconfig, const char*  basepath )
+skin_file_load_from_v1(SkinFile* file,
+                       AConfig* aconfig,
+                       const char* basepath,
+                       const SkinFramebufferFuncs* fb_funcs)
 {
     SkinPart*      part;
     SkinLayout*    layout;
@@ -568,7 +604,8 @@ skin_file_load_from_v1( SkinFile*  file, AConfig*  aconfig, const char*  basepat
     SkinLocation*  location;
     int            nn;
 
-    file->parts = part = skin_part_create_from_v1( aconfig, basepath );
+    file->parts = part = skin_part_create_from_v1(
+            aconfig, basepath, fb_funcs);
     if (part == NULL)
         return -1;
 
@@ -629,7 +666,10 @@ skin_file_load_from_v1( SkinFile*  file, AConfig*  aconfig, const char*  basepat
 }
 
 static int
-skin_file_load_from_v2( SkinFile*  file, AConfig*  aconfig, const char*  basepath )
+skin_file_load_from_v2(SkinFile* file,
+                       AConfig* aconfig,
+                       const char* basepath,
+                       const SkinFramebufferFuncs* fb_funcs)
 {
     AConfig*  node;
 
@@ -642,7 +682,8 @@ skin_file_load_from_v2( SkinFile*  file, AConfig*  aconfig, const char*  basepat
         SkinPart**  ptail = &file->parts;
         for (node = node->first_child; node != NULL; node = node->next)
         {
-            SkinPart*  part = skin_part_create_from_v2( node, basepath );
+            SkinPart*  part = skin_part_create_from_v2(
+                    node, basepath, fb_funcs);
             if (part == NULL) {
                 dprint( "## WARNING: can't load part '%s' from skin\n", node->name ? "<NULL>" : node->name );
                 continue;
@@ -665,7 +706,8 @@ skin_file_load_from_v2( SkinFile*  file, AConfig*  aconfig, const char*  basepat
         SkinLayout**  ptail = &file->layouts;
         for (node = node->first_child; node != NULL; node = node->next)
         {
-            SkinLayout*  layout = skin_layout_create_from_v2( node, file->parts );
+            SkinLayout*  layout = skin_layout_create_from_v2(
+                    node, file->parts, basepath);
             if (layout == NULL) {
                 dprint( "## WARNING: ignoring layout in skin file" );
                 continue;
@@ -683,14 +725,18 @@ skin_file_load_from_v2( SkinFile*  file, AConfig*  aconfig, const char*  basepat
 }
 
 SkinFile*
-skin_file_create_from_aconfig( AConfig*   aconfig, const char*  basepath )
+skin_file_create_from_aconfig(
+        AConfig* aconfig,
+        const char* basepath,
+        const SkinFramebufferFuncs* fb_funcs)
 {
     SkinFile*  file;
 
     ANEW0(file);
 
     if ( aconfig_find(aconfig, "parts") != NULL) {
-        if (skin_file_load_from_v2( file, aconfig, basepath ) < 0) {
+        if (skin_file_load_from_v2(
+                file, aconfig, basepath, fb_funcs) < 0) {
             goto BAD_FILE;
         }
         file->version = aconfig_int(aconfig, "version", 2);
@@ -701,7 +747,8 @@ skin_file_create_from_aconfig( AConfig*   aconfig, const char*  basepath )
         }
     }
     else {
-        if (skin_file_load_from_v1( file, aconfig, basepath ) < 0) {
+        if (skin_file_load_from_v1(
+                file, aconfig, basepath, fb_funcs) < 0) {
             goto BAD_FILE;
         }
         file->version = 1;

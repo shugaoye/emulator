@@ -27,8 +27,8 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #include "qemu-common.h"
-#include "net.h"
-#include "sysemu.h"
+#include "net/net.h"
+#include "sysemu/sysemu.h"
 #include <stdio.h>
 #include <windows.h>
 #include <winioctl.h>
@@ -576,7 +576,6 @@ static int tap_win32_open(tap_win32_overlapped_t **phandle,
     } version;
     DWORD version_len;
     DWORD idThread;
-    HANDLE hThread;
 
     if (prefered_name != NULL)
         snprintf(name_buffer, sizeof(name_buffer), "%s", prefered_name);
@@ -620,8 +619,8 @@ static int tap_win32_open(tap_win32_overlapped_t **phandle,
 
     *phandle = &tap_overlapped;
 
-    hThread = CreateThread(NULL, 0, tap_win32_thread_entry,
-                           (LPVOID)&tap_overlapped, 0, &idThread);
+    (void) CreateThread(NULL, 0, tap_win32_thread_entry,
+                        (LPVOID)&tap_overlapped, 0, &idThread);
     return 0;
 }
 
@@ -641,7 +640,7 @@ static void tap_cleanup(VLANClientState *vc)
     /* FIXME: need to kill thread and close file handle:
        tap_win32_close(s);
     */
-    qemu_free(s);
+    g_free(s);
 }
 
 static ssize_t tap_receive(VLANClientState *vc, const uint8_t *buf, size_t size)
@@ -670,7 +669,7 @@ int tap_win32_init(VLANState *vlan, const char *model,
 {
     TAPState *s;
 
-    s = qemu_mallocz(sizeof(TAPState));
+    s = g_malloc0(sizeof(TAPState));
     if (!s)
         return -1;
     if (tap_win32_open(&s->handle, ifname) < 0) {

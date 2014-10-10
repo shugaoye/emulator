@@ -27,7 +27,7 @@
 .DELETE_ON_ERROR:
 
 # shared definitions
-ifeq ($(strip $(SHOW)),)
+ifeq ($(strip $(SHOW)$(V)),)
 define pretty
 @echo $1
 endef
@@ -38,28 +38,44 @@ endef
 hide :=
 endif
 
-define my-dir
-.
-endef
+# Return the parent directory of a given path.
+# $1: path
+parent-dir = $(dir $1)
 
-# return the directory containing the intermediate files for a given
+# Return the directory of the current Makefile / Android.mk.
+my-dir = $(call parent-dir,$(lastword $(MAKEFILE_LIST)))
+
+# Return the directory containing the intermediate files for a given
 # kind of executable
-# $1 = type (EXECUTABLES or STATIC_LIBRARIES)
+# $1 = type (EXECUTABLES, STATIC_LIBRARIES or SHARED_LIBRARIES).
 # $2 = module name
 # $3 = ignored
 #
-define intermediates-dir-for
-$(OBJS_DIR)/intermediates/$(2)
-endef
+intermediates-dir-for = $(OBJS_DIR)/intermediates/$(2)
 
-# Generate the full path of a given static library
-define library-path
-$(OBJS_DIR)/libs/$(1).a
-endef
+# Return the name of a given host tool, based on the value of
+# LOCAL_HOST_BUILD. If the variable is defined, return $(BUILD_$1),
+# otherwise return $(HOST_$1).
+# $1: Tool name (e.g. CC, LD, etc...)
+#
+local-host-tool = $(if $(strip $(LOCAL_HOST_BUILD)),$(BUILD_$1),$(MY_$1))
+local-host-exe = $(call local-host-tool,EXEEXT)
+local-host-dll = $(call local-host-tool,DLLEXT)
 
-define executable-path
-$(OBJS_DIR)/$(1)$(EXE)
-endef
+local-host-define = $(if $(strip $(LOCAL_$1)),,$(eval LOCAL_$1 := $$(call local-host-tool,$1)))
+
+# Return the directory containing the intermediate files for the current
+# module. LOCAL_MODULE must be defined before calling this.
+local-intermediates-dir = $(OBJS_DIR)/intermediates/$(LOCAL_MODULE)
+
+local-library-path = $(OBJS_DIR)/libs/$(1).a
+local-executable-path = $(OBJS_DIR)/$(1)$(call local-host-tool,EXEEXT)
+local-shared-library-path = $(OBJS_DIR)/lib/$(1)$(call local-host-tool,DLLEXT)
+
+
+# Toolchain control support.
+# It's possible to switch between the regular toolchain and the host one
+# in certain cases.
 
 # Compile a C source file
 #
@@ -68,13 +84,13 @@ SRC:=$(1)
 OBJ:=$$(LOCAL_OBJS_DIR)/$$(SRC:%.c=%.o)
 LOCAL_OBJECTS += $$(OBJ)
 DEPENDENCY_DIRS += $$(dir $$(OBJ))
-$$(OBJ): PRIVATE_CFLAGS := $$(CFLAGS) $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
+$$(OBJ): PRIVATE_CFLAGS := $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
 $$(OBJ): PRIVATE_CC     := $$(LOCAL_CC)
 $$(OBJ): PRIVATE_OBJ    := $$(OBJ)
 $$(OBJ): PRIVATE_MODULE := $$(LOCAL_MODULE)
-$$(OBJ): PRIVATE_SRC    := $$(SRC_PATH)/$$(SRC)
+$$(OBJ): PRIVATE_SRC    := $$(LOCAL_PATH)/$$(SRC)
 $$(OBJ): PRIVATE_SRC0   := $$(SRC)
-$$(OBJ): $$(SRC_PATH)/$$(SRC)
+$$(OBJ): $$(LOCAL_PATH)/$$(SRC)
 	@mkdir -p $$(dir $$(PRIVATE_OBJ))
 	@echo "Compile: $$(PRIVATE_MODULE) <= $$(PRIVATE_SRC0)"
 	$(hide) $$(PRIVATE_CC) $$(PRIVATE_CFLAGS) -c -o $$(PRIVATE_OBJ) -MMD -MP -MF $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_SRC)
@@ -88,13 +104,13 @@ SRC:=$(1)
 OBJ:=$$(LOCAL_OBJS_DIR)/$$(SRC:%$(LOCAL_CPP_EXTENSION)=%.o)
 LOCAL_OBJECTS += $$(OBJ)
 DEPENDENCY_DIRS += $$(dir $$(OBJ))
-$$(OBJ): PRIVATE_CFLAGS := $$(CFLAGS) $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
+$$(OBJ): PRIVATE_CFLAGS := $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
 $$(OBJ): PRIVATE_CXX    := $$(LOCAL_CC)
 $$(OBJ): PRIVATE_OBJ    := $$(OBJ)
 $$(OBJ): PRIVATE_MODULE := $$(LOCAL_MODULE)
-$$(OBJ): PRIVATE_SRC    := $$(SRC_PATH)/$$(SRC)
+$$(OBJ): PRIVATE_SRC    := $$(LOCAL_PATH)/$$(SRC)
 $$(OBJ): PRIVATE_SRC0   := $$(SRC)
-$$(OBJ): $$(SRC_PATH)/$$(SRC)
+$$(OBJ): $$(LOCAL_PATH)/$$(SRC)
 	@mkdir -p $$(dir $$(PRIVATE_OBJ))
 	@echo "Compile: $$(PRIVATE_MODULE) <= $$(PRIVATE_SRC0)"
 	$(hide) $$(PRIVATE_CXX) $$(PRIVATE_CFLAGS) -c -o $$(PRIVATE_OBJ) -MMD -MP -MF $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_SRC)
@@ -108,13 +124,13 @@ SRC:=$(1)
 OBJ:=$$(LOCAL_OBJS_DIR)/$$(notdir $$(SRC:%.m=%.o))
 LOCAL_OBJECTS += $$(OBJ)
 DEPENDENCY_DIRS += $$(dir $$(OBJ))
-$$(OBJ): PRIVATE_CFLAGS := $$(CFLAGS) $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
+$$(OBJ): PRIVATE_CFLAGS := $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
 $$(OBJ): PRIVATE_CC     := $$(LOCAL_CC)
 $$(OBJ): PRIVATE_OBJ    := $$(OBJ)
 $$(OBJ): PRIVATE_MODULE := $$(LOCAL_MODULE)
-$$(OBJ): PRIVATE_SRC    := $$(SRC_PATH)/$$(SRC)
+$$(OBJ): PRIVATE_SRC    := $$(LOCAL_PATH)/$$(SRC)
 $$(OBJ): PRIVATE_SRC0   := $$(SRC)
-$$(OBJ): $$(SRC_PATH)/$$(SRC)
+$$(OBJ): $$(LOCAL_PATH)/$$(SRC)
 	@mkdir -p $$(dir $$(PRIVATE_OBJ))
 	@echo "Compile: $$(PRIVATE_MODULE) <= $$(PRIVATE_SRC0)"
 	$(hide) $$(PRIVATE_CC) $$(PRIVATE_CFLAGS) -c -o $$(PRIVATE_OBJ) -MMD -MP -MF $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_SRC)
@@ -128,7 +144,7 @@ SRC:=$(1)
 OBJ:=$$(LOCAL_OBJS_DIR)/$$(notdir $$(SRC:%.c=%.o))
 LOCAL_OBJECTS += $$(OBJ)
 DEPENDENCY_DIRS += $$(dir $$(OBJ))
-$$(OBJ): PRIVATE_CFLAGS := $$(CFLAGS) $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
+$$(OBJ): PRIVATE_CFLAGS := $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
 $$(OBJ): PRIVATE_CC     := $$(LOCAL_CC)
 $$(OBJ): PRIVATE_OBJ    := $$(OBJ)
 $$(OBJ): PRIVATE_MODULE := $$(LOCAL_MODULE)
@@ -138,6 +154,24 @@ $$(OBJ): $$(SRC)
 	@mkdir -p $$(dir $$(PRIVATE_OBJ))
 	@echo "Compile: $$(PRIVATE_MODULE) <= $$(PRIVATE_SRC0)"
 	$(hide) $$(PRIVATE_CC) $$(PRIVATE_CFLAGS) -c -o $$(PRIVATE_OBJ) -MMD -MP -MF $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_SRC)
+	$(hide) $$(BUILD_SYSTEM)/mkdeps.sh $$(PRIVATE_OBJ) $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_OBJ).d
+endef
+
+define compile-generated-cxx-source
+SRC:=$(1)
+OBJ:=$$(LOCAL_OBJS_DIR)/$$(notdir $$(SRC:%$(LOCAL_CPP_EXTENSION)=%.o))
+LOCAL_OBJECTS += $$(OBJ)
+DEPENDENCY_DIRS += $$(dir $$(OBJ))
+$$(OBJ): PRIVATE_CFLAGS := $$(LOCAL_CFLAGS) -I$$(LOCAL_PATH) -I$$(LOCAL_OBJS_DIR)
+$$(OBJ): PRIVATE_CXX    := $$(LOCAL_CC)
+$$(OBJ): PRIVATE_OBJ    := $$(OBJ)
+$$(OBJ): PRIVATE_MODULE := $$(LOCAL_MODULE)
+$$(OBJ): PRIVATE_SRC    := $$(SRC)
+$$(OBJ): PRIVATE_SRC0   := $$(SRC)
+$$(OBJ): $$(SRC)
+	@mkdir -p $$(dir $$(PRIVATE_OBJ))
+	@echo "Compile: $$(PRIVATE_MODULE) <= $$(PRIVATE_SRC0)"
+	$(hide) $$(PRIVATE_CXX) $$(PRIVATE_CFLAGS) -c -o $$(PRIVATE_OBJ) -MMD -MP -MF $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_SRC)
 	$(hide) $$(BUILD_SYSTEM)/mkdeps.sh $$(PRIVATE_OBJ) $$(PRIVATE_OBJ).d.tmp $$(PRIVATE_OBJ).d
 endef
 
@@ -181,4 +215,3 @@ define transform-generated-source
 @mkdir -p $(dir $@)
 $(hide) $(PRIVATE_CUSTOM_TOOL)
 endef
-

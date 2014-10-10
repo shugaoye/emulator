@@ -420,7 +420,7 @@ static const mips_def_t mips_defs[] =
         /* A generic CPU providing MIPS64 Release 2 features.
            FIXME: Eventually this should be replaced by a real CPU model. */
         .name = "MIPS64R2-generic",
-        .CP0_PRid = 0x00010000,
+        .CP0_PRid = 0x00018900,
         .CP0_Config0 = MIPS_CONFIG0 | (0x1 << CP0C0_AR) | (0x2 << CP0C0_AT) |
                        (MMU_TYPE_R4000 << CP0C0_MT),
         .CP0_Config1 = MIPS_CONFIG1 | (1 << CP0C1_FP) | (63 << CP0C1_MMU) |
@@ -495,7 +495,7 @@ static void r4k_mmu_init (CPUMIPSState *env, const mips_def_t *def)
 
 static void mmu_init (CPUMIPSState *env, const mips_def_t *def)
 {
-    env->tlb = qemu_mallocz(sizeof(CPUMIPSTLBContext));
+    env->tlb = g_malloc0(sizeof(CPUMIPSTLBContext));
 
     switch (def->mmu_type) {
         case MMU_TYPE_NONE:
@@ -528,7 +528,7 @@ static void fpu_init (CPUMIPSState *env, const mips_def_t *def)
 
 static void mvp_init (CPUMIPSState *env, const mips_def_t *def)
 {
-    env->mvp = qemu_mallocz(sizeof(CPUMIPSMVPContext));
+    env->mvp = g_malloc0(sizeof(CPUMIPSMVPContext));
 
     /* MVPConf1 implemented, TLB sharable, no gating storage support,
        programmable cache partitioning implemented, number of allocatable

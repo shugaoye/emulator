@@ -1,10 +1,10 @@
 #include "hw/hw.h"
 #include "hw/boards.h"
-#include "hw/pc.h"
-#include "hw/isa.h"
+#include "hw/i386/pc.h"
+#include "hw/isa/isa.h"
 
-#include "exec-all.h"
-#include "kvm.h"
+#include "cpu.h"
+#include "sysemu/kvm.h"
 
 static void cpu_put_seg(QEMUFile *f, SegmentCache *dt)
 {
@@ -24,13 +24,13 @@ static void cpu_get_seg(QEMUFile *f, SegmentCache *dt)
 
 void cpu_save(QEMUFile *f, void *opaque)
 {
-    CPUState *env = opaque;
+    CPUX86State *env = opaque;
     uint16_t fptag, fpus, fpuc, fpregs_format;
     uint32_t hflags;
     int32_t a20_mask;
     int i;
 
-    cpu_synchronize_state(env, 0);
+    cpu_synchronize_state(ENV_GET_CPU(env), 0);
 
     for(i = 0; i < CPU_NB_REGS; i++)
         qemu_put_betls(f, &env->regs[i]);
@@ -51,31 +51,15 @@ void cpu_save(QEMUFile *f, void *opaque)
     qemu_put_be16s(f, &fpus);
     qemu_put_be16s(f, &fptag);
 
-#ifdef USE_X86LDOUBLE
-    fpregs_format = 0;
-#else
     fpregs_format = 1;
-#endif
     qemu_put_be16s(f, &fpregs_format);
 
     for(i = 0; i < 8; i++) {
-#ifdef USE_X86LDOUBLE
-        {
-            uint64_t mant;
-            uint16_t exp;
-            /* we save the real CPU data (in case of MMX usage only 'mant'
-               contains the MMX register */
-            cpu_get_fp80(&mant, &exp, env->fpregs[i].d);
-            qemu_put_be64(f, mant);
-            qemu_put_be16(f, exp);
-        }
-#else
         /* if we use doubles for float emulation, we save the doubles to
            avoid losing information in case of MMX usage. It can give
            problems if the image is restored on a CPU where long
            doubles are used instead. */
         qemu_put_be64(f, env->fpregs[i].mmx.MMX_Q(0));
-#endif
     }
 
     for(i = 0; i < 6; i++)
@@ -120,7 +104,7 @@ void cpu_save(QEMUFile *f, void *opaque)
 
     qemu_put_be64s(f, &env->pat);
     qemu_put_be32s(f, &env->hflags2);
-    
+
     qemu_put_be64s(f, &env->vm_hsave);
     qemu_put_be64s(f, &env->vm_vmcb);
     qemu_put_be64s(f, &env->tsc_offset);
@@ -161,33 +145,9 @@ void cpu_save(QEMUFile *f, void *opaque)
     }
 }
 
-#ifdef USE_X86LDOUBLE
-/* XXX: add that in a FPU generic layer */
-union x86_longdouble {
-    uint64_t mant;
-    uint16_t exp;
-};
-
-#define MANTD1(fp)	(fp & ((1LL << 52) - 1))
-#define EXPBIAS1 1023
-#define EXPD1(fp)	((fp >> 52) & 0x7FF)
-#define SIGND1(fp)	((fp >> 32) & 0x80000000)
-
-static void fp64_to_fp80(union x86_longdouble *p, uint64_t temp)
-{
-    int e;
-    /* mantissa */
-    p->mant = (MANTD1(temp) << 11) | (1LL << 63);
-    /* exponent + sign */
-    e = EXPD1(temp) - EXPBIAS1 + 16383;
-    e |= SIGND1(temp) >> 16;
-    p->exp = e;
-}
-#endif
-
 int cpu_load(QEMUFile *f, void *opaque, int version_id)
 {
-    CPUState *env = opaque;
+    CPUX86State *env = opaque;
     int i, guess_mmx;
     uint32_t hflags;
     uint16_t fpus, fpuc, fptag, fpregs_format;
@@ -218,33 +178,15 @@ int cpu_load(QEMUFile *f, void *opaque, int version_id)
         case 0:
             mant = qemu_get_be64(f);
             exp = qemu_get_be16(f);
-#ifdef USE_X86LDOUBLE
-            env->fpregs[i].d = cpu_set_fp80(mant, exp);
-#else
             /* difficult case */
             if (guess_mmx)
                 env->fpregs[i].mmx.MMX_Q(0) = mant;
             else
                 env->fpregs[i].d = cpu_set_fp80(mant, exp);
-#endif
             break;
         case 1:
             mant = qemu_get_be64(f);
-#ifdef USE_X86LDOUBLE
-            {
-                union x86_longdouble *p;
-                /* difficult case */
-                p = (void *)&env->fpregs[i];
-                if (guess_mmx) {
-                    p->mant = mant;
-                    p->exp = 0xffff;
-                } else {
-                    fp64_to_fp80(p, mant);
-                }
-            }
-#else
             env->fpregs[i].mmx.MMX_Q(0) = mant;
-#endif
             break;
         default:
             return -EINVAL;
@@ -313,7 +255,7 @@ int cpu_load(QEMUFile *f, void *opaque, int version_id)
         qemu_get_be64s(f, &env->pat);
         qemu_get_be32s(f, &env->hflags2);
         if (version_id < 6)
-            qemu_get_be32s(f, &env->halted);
+            qemu_get_be32s(f, &ENV_GET_CPU(env)->halted);
 
         qemu_get_be64s(f, &env->vm_hsave);
         qemu_get_be64s(f, &env->vm_vmcb);
@@ -364,6 +306,6 @@ int cpu_load(QEMUFile *f, void *opaque, int version_id)
     /* XXX: compute redundant hflags bits */
     env->hflags = hflags;
     tlb_flush(env, 1);
-    cpu_synchronize_state(env, 1);
+    cpu_synchronize_state(ENV_GET_CPU(env), 1);
     return 0;
 }

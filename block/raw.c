@@ -1,7 +1,7 @@
 
 #include "qemu-common.h"
-#include "block_int.h"
-#include "module.h"
+#include "block/block_int.h"
+#include "qemu/module.h"
 
 static int raw_open(BlockDriverState *bs, int flags)
 {
@@ -113,7 +113,7 @@ static void raw_aio_writev_scrubbed(void *opaque, int ret)
     }
 
     qemu_iovec_destroy(&b->qiov);
-    qemu_free(b);
+    g_free(b);
 }
 
 static BlockDriverAIOCB *raw_aio_writev(BlockDriverState *bs,
@@ -147,12 +147,12 @@ static BlockDriverAIOCB *raw_aio_writev(BlockDriverState *bs,
 
         /* adjust request to be everything but first sector */
 
-        b = qemu_malloc(sizeof(*b));
+        b = g_malloc(sizeof(*b));
         b->cb = cb;
         b->opaque = opaque;
 
         qemu_iovec_init(&b->qiov, qiov->nalloc);
-        qemu_iovec_concat(&b->qiov, qiov, qiov->size);
+        qemu_iovec_concat(&b->qiov, qiov, 0, qiov->size);
 
         b->qiov.size -= 512;
         b->qiov.iov[first_buf_index].iov_base += 512;
@@ -245,7 +245,7 @@ static int raw_has_zero_init(BlockDriverState *bs)
 static BlockDriver bdrv_raw = {
     .format_name        = "raw",
 
-    /* It's really 0, but we need to make qemu_malloc() happy */
+    /* It's really 0, but we need to make g_malloc() happy */
     .instance_size      = 1,
 
     .bdrv_open          = raw_open,

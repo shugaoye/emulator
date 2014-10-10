@@ -1271,13 +1271,16 @@ static void pointer_event(VncState *vs, int button_mask, int x, int y)
         dz = 1;
 
     if (vs->absolute) {
+/* + Modified by James  */
+#if 0
         kbd_mouse_event(x * 0x7FFF / (ds_get_width(vs->ds) - 1),
                         y * 0x7FFF / (ds_get_height(vs->ds) - 1),
                         dz, buttons);
     } else if (vnc_has_feature(vs, VNC_FEATURE_POINTER_TYPE_CHANGE)) {
         x -= 0x7FFF;
         y -= 0x7FFF;
-
+#endif
+/* - End of modification */
         kbd_mouse_event(x, y, dz, buttons);
     } else {
         if (vs->last_x != -1)
@@ -1296,9 +1299,14 @@ static void reset_keys(VncState *vs)
     int i;
     for(i = 0; i < 256; i++) {
         if (vs->modifiers_state[i]) {
-            if (i & 0x80)
+/* + Modified by James */ 
+/*
+           if (i & 0x80)
                 kbd_put_keycode(0xe0);
             kbd_put_keycode(i | 0x80);
+*/
+           kbd_put_keycode(i & 0x1ff);
+/* - End of modification  */
             vs->modifiers_state[i] = 0;
         }
     }
@@ -1306,12 +1314,23 @@ static void reset_keys(VncState *vs)
 
 static void press_key(VncState *vs, int keysym)
 {
+/* + Modified by James */
+#if 0
     kbd_put_keycode(keysym2scancode(vs->vd->kbd_layout, keysym) & 0x7f);
     kbd_put_keycode(keysym2scancode(vs->vd->kbd_layout, keysym) | 0x80);
+#else
+    kbd_put_keycode(keysym2scancode(vs->vd->kbd_layout, keysym) | 0x200);
+    kbd_put_keycode(keysym2scancode(vs->vd->kbd_layout, keysym) & 0x1ff);
+#endif
+/* - End of modification */
 }
 
 static void do_key_event(VncState *vs, int down, int keycode, int sym)
 {
+/* + Modified by James */
+    printf("[%s] sym:%#x keycode:%#x\n", __FUNCTION__, sym, keycode);
+/* - End of modification */
+
     /* QEMU console switch */
     switch(keycode) {
     case 0x2a:                          /* Left Shift */
@@ -1359,12 +1378,21 @@ static void do_key_event(VncState *vs, int down, int keycode, int sym)
     }
 
     if (is_graphic_console()) {
+/* + Modified by James */
+#if 0
         if (keycode & 0x80)
             kbd_put_keycode(0xe0);
         if (down)
             kbd_put_keycode(keycode & 0x7f);
         else
             kbd_put_keycode(keycode | 0x80);
+#else
+        if (down)
+            kbd_put_keycode(keycode | 0x200);
+        else
+            kbd_put_keycode(keycode & 0x1ff);
+#endif
+/* - End of modification */
     } else {
         /* QEMU console emulation */
         if (down) {

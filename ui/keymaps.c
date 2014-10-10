@@ -157,6 +157,8 @@ void *init_keyboard_layout(const name2keysym_t *table, const char *language)
 
 int keysym2scancode(void *kbd_layout, int keysym)
 {
+/* + Modified by James */
+    int keycode = 0;
     kbd_layout_t *k = kbd_layout;
     if (keysym < MAX_NORMAL_KEYCODE) {
 	if (k->keysym2keycode[keysym] == 0)
@@ -173,7 +175,19 @@ int keysym2scancode(void *kbd_layout, int keysym)
 	    if (k->keysym2keycode_extra[i].keysym == keysym)
 		return k->keysym2keycode_extra[i].keycode;
     }
-    return 0;
+
+    // keycode value see hw-events.h
+    switch (keysym) {
+        case 0xFF55: keycode = 229; break;
+        case 0xFF1B: keycode = 158; break;
+	case 0xFFAB: keycode = 115; break;
+	case 0xFFAD: keycode = 114; break;
+
+    }
+
+    return keycode;
+
+/* - End of modification */
 }
 
 int keycode_is_keypad(void *kbd_layout, int keycode)

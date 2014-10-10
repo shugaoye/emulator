@@ -25,6 +25,8 @@
 #include "keymaps.h"
 #include "sysemu.h"
 
+#include "linux_keycodes.h"
+
 static int get_keysym(const name2keysym_t *table,
 		      const char *name)
 {
@@ -173,6 +175,8 @@ void *init_keyboard_layout(const name2keysym_t *table, const char *language)
 
 int keysym2scancode(void *kbd_layout, int keysym)
 {
+	/* + Modified by James */
+#if 0
     kbd_layout_t *k = kbd_layout;
     if (keysym < MAX_NORMAL_KEYCODE) {
 	if (k->keysym2keycode[keysym] == 0)
@@ -189,7 +193,96 @@ int keysym2scancode(void *kbd_layout, int keysym)
 	    if (k->keysym2keycode_extra[i].keysym == keysym)
 		return k->keysym2keycode_extra[i].keycode;
     }
+
     return 0;
+#else
+    int scancode = 0;
+    int code = (int)keysym;
+
+    if (code >= '0' && code <= '9') {
+    	scancode = (code & 0xF) - 1;
+
+    	if (scancode < 0)
+    		scancode += 10;
+
+    	scancode += KEY_1;
+    } else if (code >= 0xFF50 && code <= 0xFF58) {
+    	static const unsigned short int map[] = {
+    		KEY_HOME, KEY_LEFT, KEY_UP, KEY_RIGHT,
+    		KEY_DOWN, KEY_SOFT1, KEY_SOFT2, KEY_END,
+    		0,
+    	};
+
+    	scancode = map[code & 0xF];
+    } else if (code >= 0xFFE1 && code <= 0xFFEE) {
+    	static const unsigned short int map[] = {
+    		KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_COMPOSE, KEY_COMPOSE,
+    		KEY_CAPSLOCK, KEY_LEFTSHIFT, KEY_LEFTMETA, KEY_RIGHTMETA,
+    		KEY_LEFTALT, KEY_RIGHTALT, 0, 0,
+    		0, 0
+    	};
+
+    	scancode = map[code & 0xF];
+    } else if ((code >= 'A' && code <= 'Z') || (code >= 'a' && code <= 'z')) {
+    	static const unsigned short int map[] = {
+    		KEY_A, KEY_B, KEY_C, KEY_D, KEY_E,
+    		KEY_F, KEY_G, KEY_H, KEY_I, KEY_J,
+    		KEY_K, KEY_L, KEY_M, KEY_N, KEY_O,
+    		KEY_P, KEY_Q, KEY_R, KEY_S, KEY_T,
+    		KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y,
+    		KEY_Z
+    	};
+
+    	scancode = map[(code & 0x5F) - 'A'];
+    } else if (code >= 0xFFBE && code <= 0xFFD5) {
+    	static const unsigned short int map[] = {
+    			KEY_F1, KEY_F2, KEY_F3, KEY_F4,
+    			KEY_F5, KEY_F6, KEY_F7, KEY_F8,
+    			KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+    			KEY_F13, KEY_F14, KEY_F15, KEY_F16,
+    			KEY_F17, KEY_F18, KEY_F19, KEY_F20,
+    			KEY_F21, KEY_F22, KEY_F23, KEY_F24
+    	};
+
+    	scancode = map[code - 0xFFBE];
+    } else if (code >= 0xFF08 && code <= 0xFF0D) {
+    	static const unsigned short int map[] = {
+    			KEY_BACKSPACE, KEY_TAB, KEY_LINEFEED, KEY_CLEAR,
+    			0, KEY_ENTER
+    	};
+
+    	scancode = map[code - 0xFF08];
+    } else if (code >= 0xFF13 && code <= 0xFF15) {
+    	static const unsigned short int map[] = {
+    			KEY_PAUSE, KEY_SCROLLLOCK, KEY_SYSRQ,
+    	};
+
+    	scancode = map[code - 0xFF13];
+    } else {
+    	switch(code) {
+    		case 0x0003: scancode = KEY_CENTER; break;
+    		case 0x0020: scancode = KEY_SPACE; break;
+    		case 0x0023: scancode = KEY_SHARP; break;
+    		case 0x0033: scancode = KEY_SHARP; break;
+    		case 0x002C: scancode = KEY_COMMA; break;
+    		case 0x003C: scancode = KEY_COMMA; break;
+    		case 0x002E: scancode = KEY_DOT; break;
+    		case 0x003E: scancode = KEY_DOT; break;
+    		case 0x002F: scancode = KEY_SLASH; break;
+    		case 0x003F: scancode = KEY_SLASH; break;
+    		case 0x0032: scancode = KEY_EMAIL; break;
+    		case 0x0040: scancode = KEY_EMAIL; break;
+    		case 0xFF1B: scancode = KEY_BACK; break;
+    		case 0xFFFF: scancode = KEY_DELETE; break;
+    		case 0x002A: scancode = KEY_STAR; break;
+		case 0xFFAB: scancode = KEY_VOLUMEUP; break;
+		case 0xFFAD: scancode = KEY_VOLUMEDOWN; break;
+    	}
+    }
+
+    return scancode;
+#endif
+    /* - End of modification */
 }
 
 int keycode_is_keypad(void *kbd_layout, int keycode)

@@ -1507,6 +1507,7 @@ static const CommandDefRec  cdma_commands[] =
     { "prl_version", "Dump the current PRL version",
       NULL, NULL,
       do_cdma_prl_version, NULL },
+    { NULL, NULL, NULL, NULL, NULL, NULL }
 };
 
 static const CommandDefRec  gsm_commands[] =
@@ -1988,7 +1989,7 @@ do_event_text( ControlClient  client, char*  args )
         return -1;
     }
 
-    skin_keycodes_buffer_init(&keycodes, &user_event_keycodes);
+    skin_keycode_buffer_init(&keycodes, &user_event_keycodes);
 
     /* un-secape message text into proper utf-8 (conversion happens in-site) */
     textlen = strlen((char*)p);
@@ -2012,7 +2013,7 @@ do_event_text( ControlClient  client, char*  args )
 
         skin_charmap_reverse_map_unicode( NULL, (unsigned)c, 1, &keycodes );
         skin_charmap_reverse_map_unicode( NULL, (unsigned)c, 0, &keycodes );
-        skin_keycodes_buffer_flush( &keycodes );
+        skin_keycode_buffer_flush( &keycodes );
     }
 
     return 0;

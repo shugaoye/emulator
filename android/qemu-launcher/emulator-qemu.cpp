@@ -83,8 +83,39 @@ static const char kHostOs[] = "darwin";
 static const char kHostOs[] = "windows";
 #endif
 
-// The target CPU architecture.
-const char kTargetArch[] = "aarch64";
+// A structure used to model information about a given target CPU architecture.
+// |androidArch| is the architecture name, following Android conventions.
+// |qemuArch| is the same name, following QEMU conventions, used to locate
+// the final qemu-system-<qemuArch> binary.
+// |qemuCpu| is the QEMU -cpu parameter value.
+// |ttyPrefix| is the prefix to use for TTY devices.
+// |kernelExtraArgs|, if not NULL, is an optional string appended to the kernel
+// parameters.
+struct TargetInfo {
+    const char* androidArch;
+    const char* qemuArch;
+    const char* qemuCpu;
+    const char* ttyPrefix;
+    const char* kernelExtraArgs;
+};
+
+// The current target architecture information!
+const TargetInfo kTarget = {
+#ifdef TARGET_ARM64
+    "arm64",
+    "aarch64",
+    "cortex-a57",
+    "ttyAMA",
+    " keep_bootcon earlyprintk=ttyAMA0",
+#endif
+#ifdef TARGET_MIPS64
+    "mips64",
+    "mips64el",
+    "MIPS64R6-generic",
+    "ttyGF",
+    NULL,
+#endif
+};
 
 String getNthParentDir(const char* path, size_t n) {
     StringVector dir = PathUtils::decompose(path);
@@ -114,7 +145,7 @@ String getQemuExecutablePath(const char* programPath) {
     path.append(host);
 
     String qemuProgram = "qemu-system-";
-    qemuProgram += kTargetArch;
+    qemuProgram += kTarget.qemuArch;
 #ifdef _WIN32
     qemuProgram += ".exe";
 #endif
@@ -279,15 +310,7 @@ extern "C" int main(int argc, char **argv, char **envp) {
 
     /* Update CPU architecture for HW configs created from build dir. */
     if (inAndroidBuild) {
-#if defined(TARGET_ARM)
-        reassign_string(&android_hw->hw_cpu_arch, "arm");
-#elif defined(TARGET_I386)
-        reassign_string(&android_hw->hw_cpu_arch, "x86");
-#elif defined(TARGET_MIPS)
-        reassign_string(&android_hw->hw_cpu_arch, "mips");
-#elif defined(TARGET_ARM64)
-        reassign_string(&android_hw->hw_cpu_arch, "arm64");
-#endif
+        reassign_string(&android_hw->hw_cpu_arch, kTarget.androidArch);
     }
 
     /* generate arguments for the underlying qemu main() */
@@ -757,7 +780,7 @@ extern "C" int main(int argc, char **argv, char **envp) {
     args[n++] = qemuExecutable.c_str();
 
     args[n++] = "-cpu";
-    args[n++] = "cortex-a57";
+    args[n++] = kTarget.qemuCpu;
     args[n++] = "-machine";
     args[n++] = "type=ranchu";
 
@@ -768,8 +791,12 @@ extern "C" int main(int argc, char **argv, char **envp) {
 
     // Command-line
     args[n++] = "-append";
-    String kernelCommandLine =
-            "console=ttyAMA0,38400 keep_bootcon earlyprintk=ttyAMA0";
+
+    String kernelCommandLine = StringFormat("console=%s0,38400",
+                                            kTarget.ttyPrefix);
+    if (kTarget.kernelExtraArgs) {
+        kernelCommandLine += kTarget.kernelExtraArgs;
+    }
     args[n++] = kernelCommandLine.c_str();
 
     args[n++] = "-serial";
@@ -816,6 +843,11 @@ extern "C" int main(int argc, char **argv, char **envp) {
     args[n++] = "-device";
     args[n++] = "virtio-net-device,netdev=mynet";
     args[n++] = "-show-cursor";
+
+    // Graphics
+    if (opts->no_window) {
+        args[n++] = "-nographic";
+    }
 
     // Data directory (for keymaps and PC Bios).
     args[n++] = "-L";

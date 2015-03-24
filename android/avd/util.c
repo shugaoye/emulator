@@ -25,13 +25,6 @@
 
 #define D(...) VERBOSE_PRINT(init,__VA_ARGS__)
 
-/* this is the subdirectory of $HOME/.android where all
- * root configuration files (and default content directories)
- * are located.
- */
-#define  ANDROID_AVD_DIR    "avd"
-
-
 /* Return the path to the Android SDK root installation.
  *
  * (*pFromEnv) will be set to 1 if it comes from the $ANDROID_SDK_ROOT
@@ -88,8 +81,8 @@ path_getRootIniPath( const char*  avdName )
 {
     char temp[PATH_MAX], *p=temp, *end=p+sizeof(temp);
 
-    p = bufprint_config_path(temp, end);
-    p = bufprint(p, end, PATH_SEP ANDROID_AVD_DIR PATH_SEP "%s.ini", avdName);
+    p = bufprint_avd_home_path(temp, end);
+    p = bufprint(p, end, PATH_SEP "%s.ini", avdName);
     if (p >= end) {
         return NULL;
     }
@@ -98,19 +91,6 @@ path_getRootIniPath( const char*  avdName )
     }
     return ASTRDUP(temp);
 }
-
-
-char*
-path_getSdkHome(void)
-{
-    char temp[PATH_MAX], *p=temp, *end=p+sizeof(temp);
-    p = bufprint_config_path(temp, end);
-    if (p >= end) {
-        APANIC("User path too long!: %s\n", temp);
-    }
-    return strdup(temp);
-}
-
 
 static char*
 _getAvdContentPath(const char* avdName)
@@ -122,11 +102,27 @@ _getAvdContentPath(const char* avdName)
 
     if (iniPath != NULL) {
         ini = iniFile_newFromFile(iniPath);
+        if (ini == NULL) {
+            APANIC("Could not parse file: %s\n", iniPath);
+        }
         AFREE(iniPath);
-    }
-
-    if (ini == NULL) {
-        APANIC("Could not open: %s\n", iniPath == NULL ? avdName : iniPath);
+    } else {
+        static const char kHomeSearchDir[] = "$HOME" PATH_SEP ".android" PATH_SEP "avd";
+        static const char kSdkHomeSearchDir[] = "$ANDROID_SDK_HOME" PATH_SEP ".android"
+            PATH_SEP "avd";
+        const char* envName = "HOME";
+        const char* searchDir = kHomeSearchDir;
+        if (getenv("ANDROID_AVD_HOME")) {
+            envName = "ANDROID_AVD_HOME";
+            searchDir = "$ANDROID_AVD_HOME";
+        } else if (getenv("ANDROID_SDK_HOME")) {
+            envName = "ANDROID_SDK_HOME";
+            searchDir = kSdkHomeSearchDir;
+        }
+        APANIC("%s is defined but could not find %s.ini file in %s\n"
+                "(Note: avd is searched in the order of $ANDROID_AVD_HOME,"
+                "%s and %s)\n",
+                envName, avdName, searchDir, kSdkHomeSearchDir, kHomeSearchDir);
     }
 
     avdPath = iniFile_getString(ini, ROOT_ABS_PATH_KEY, NULL);
@@ -294,11 +290,13 @@ path_getBuildTargetArch(const char* androidOut) {
 
 
 static char*
-_getAvdTargetArch(const char* avdPath)
+_getAvdConfigValue(const char* avdPath,
+                   const char* key,
+                   const char* defaultValue)
 {
     IniFile* ini;
-    char*    targetArch = NULL;
-    char     temp[PATH_MAX], *p=temp, *end=p+sizeof(temp);
+    char* result = NULL;
+    char temp[PATH_MAX], *p = temp, *end = p + sizeof(temp);
     p = bufprint(temp, end, "%s" PATH_SEP "config.ini", avdPath);
     if (p >= end) {
         APANIC("AVD path too long: %s\n", avdPath);
@@ -307,20 +305,36 @@ _getAvdTargetArch(const char* avdPath)
     if (ini == NULL) {
         APANIC("Could not open AVD config file: %s\n", temp);
     }
-    targetArch = iniFile_getString(ini, "hw.cpu.arch", "arm");
+    result = iniFile_getString(ini, key, defaultValue);
     iniFile_free(ini);
 
-    return targetArch;
+    return result;
 }
 
 char*
 path_getAvdTargetArch( const char* avdName )
 {
     char*  avdPath = _getAvdContentPath(avdName);
-    char*  avdArch = _getAvdTargetArch(avdPath);
+    char*  avdArch = _getAvdConfigValue(avdPath, "hw.cpu.arch", "arm");
     AFREE(avdPath);
 
     return avdArch;
+}
+
+char*
+path_getAvdGpuMode(const char* avdName)
+{
+    char* avdPath = _getAvdContentPath(avdName);
+    char* gpuEnabled = _getAvdConfigValue(avdPath, "hw.gpu.enabled", "no");
+    bool enabled = !strcmp(gpuEnabled, "yes");
+    AFREE(gpuEnabled);
+
+    char* gpuMode = NULL;
+    if (enabled) {
+        gpuMode = _getAvdConfigValue(avdPath, "hw.gpu.mode", "auto");
+    }
+    AFREE(avdPath);
+    return gpuMode;
 }
 
 const char*
@@ -338,7 +352,7 @@ emulator_getBackendSuffix(const char* targetArch)
         { "x86_64", "x86" },
         { "mips", "mips" },
         { "arm64", "arm" },
-        { "mips64", "mips" },
+        { "mips64", "mips64" },
         // Add more if needed here.
     };
     size_t n;

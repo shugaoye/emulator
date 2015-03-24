@@ -39,9 +39,16 @@ char* path_getSdkRoot( char *pFromEnv );
 char* path_getRootIniPath( const char*  avdName );
 
 /* Return the target architecture for a given AVD.
- * Called must free() returned string.
+ * Caller must free() returned string.
  */
 char* path_getAvdTargetArch( const char* avdName );
+
+/* Return the value of hw.gpu.mode for a given AVD.
+ * Caller must free() returned string.
+ *
+ * NOTE: If hw.gpu.enabled is false, then this returns NULL
+ */
+char* path_getAvdGpuMode(const char* avdName);
 
 typedef enum {
     RESULT_INVALID   = -1, // key was found but value contained invalid data
@@ -115,6 +122,12 @@ char* path_getBuildTargetArch( const char* androidOut );
  * etc. Returned string must not be freed by the caller.
  */
 const char* emulator_getBackendSuffix(const char* targetArch);
+
+/* this is the subdirectory of $HOME/.android where all
+ * root configuration files (and default content directories)
+ * are located.
+ */
+#define  ANDROID_AVD_DIR    "avd"
 
 ANDROID_END_HEADER
 

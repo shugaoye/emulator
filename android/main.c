@@ -18,6 +18,12 @@
 #include <process.h>
 #endif
 
+#ifdef __APPLE__
+// This include is currently required to ensure that 'main' is renamed
+// to 'SDL_main' as a macro. This is required by SDL 1.x on OS X.
+#include "SDL.h"
+#endif  // __APPLE__
+
 #include "config.h"
 #include "android/sockets.h"
 
@@ -27,11 +33,9 @@
 #include "ui/console.h"
 #include "android/user-events.h"
 
-#include <SDL.h>
-#include <SDL_syswm.h>
-
 #include "math.h"
 
+#include "android/avd/scanner.h"
 #include "android/config/config.h"
 #include "android/cpu_accelerator.h"
 
@@ -47,6 +51,7 @@
 #include "android/utils/path.h"
 #include "android/utils/property_file.h"
 #include "android/utils/tempfile.h"
+#include "android/utils/x86_cpuid.h"
 
 #include "android/main-common.h"
 #include "android/help.h"
@@ -54,12 +59,12 @@
 
 #include "android/globals.h"
 
-#include "android/qemulator.h"
 #include "android/display.h"
 
 #include "android/snapshot.h"
 
 #include "android/framebuffer.h"
+#include "android/opengl/emugl_config.h"
 #include "android/iolooper.h"
 
 SkinRotation  android_framebuffer_rotation;
@@ -188,8 +193,6 @@ int main(int argc, char **argv)
     socket_init();
 #endif
 
-    handle_ui_options(opts);
-
     while (argc-- > 1) {
         opt = (++argv)[0];
 
@@ -255,6 +258,19 @@ int main(int argc, char **argv)
                "  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
                "  GNU General Public License for more details.\n\n");
 
+        exit(0);
+    }
+
+    if (opts->list_avds) {
+        AvdScanner* scanner = avdScanner_new(NULL);
+        for (;;) {
+            const char* name = avdScanner_next(scanner);
+            if (!name) {
+                break;
+            }
+            printf("%s\n", name);
+        }
+        avdScanner_free(scanner);
         exit(0);
     }
 
@@ -386,20 +402,20 @@ int main(int argc, char **argv)
         }
     }
 
-    if (opts->trace) {
-        char*   tracePath = avdInfo_getTracePath(avd, opts->trace);
+    if (opts->code_profile) {
+        char*   profilePath = avdInfo_getCodeProfilePath(avd, opts->code_profile);
         int     ret;
 
-        if (tracePath == NULL) {
-            derror( "bad -trace parameter" );
+        if (profilePath == NULL) {
+            derror( "bad -code-profile parameter" );
             exit(1);
         }
-        ret = path_mkdir_if_needed( tracePath, 0755 );
+        ret = path_mkdir_if_needed( profilePath, 0755 );
         if (ret < 0) {
             fprintf(stderr, "could not create directory '%s'\n", tmp);
             exit(2);
         }
-        opts->trace = tracePath;
+        opts->code_profile = profilePath;
     }
 
     /* Update CPU architecture for HW configs created from build dir. */
@@ -410,6 +426,8 @@ int main(int argc, char **argv)
         reassign_string(&android_hw->hw_cpu_arch, "x86");
 #elif defined(TARGET_MIPS)
         reassign_string(&android_hw->hw_cpu_arch, "mips");
+#elif defined(TARGET_MIPS64)
+        reassign_string(&android_hw->hw_cpu_arch, "mips64");
 #endif
     }
 
@@ -423,6 +441,14 @@ int main(int argc, char **argv)
             kernelFile = avdInfo_getKernelPath(avd);
             if (kernelFile == NULL) {
                 derror( "This AVD's configuration is missing a kernel file!!" );
+                const char* sdkRootDir = getenv("ANDROID_SDK_ROOT");
+                if (sdkRootDir) {
+                    derror( "ANDROID_SDK_ROOT is defined (%s) but cannot find kernel file in "
+                            "%s" PATH_SEP "system-images" PATH_SEP
+                            " sub directories", sdkRootDir, sdkRootDir);
+                } else {
+                    derror( "ANDROID_SDK_ROOT is undefined");
+                }
                 exit(2);
             }
             D("autoconfig: -kernel %s", kernelFile);
@@ -1023,11 +1049,9 @@ int main(int argc, char **argv)
         hw->vm_heapSize = heapSize;
     }
 
-    if (opts->trace) {
-        args[n++] = "-trace";
-        args[n++] = opts->trace;
-        args[n++] = "-tracing";
-        args[n++] = "off";
+    if (opts->code_profile) {
+        args[n++] = "-code-profile";
+        args[n++] = opts->code_profile;
     }
 
     /* Pass boot properties to the core. First, those from boot.prop,
@@ -1072,10 +1096,6 @@ int main(int argc, char **argv)
             p = bufprint(p, end, " androidboot.console=%s%d",
                          androidHwConfig_getKernelSerialPrefix(android_hw),
                          shell_serial );
-        }
-
-        if (opts->trace) {
-            p = bufprint(p, end, " android.tracing=1");
         }
 
         if (!opts->no_jni) {
@@ -1163,19 +1183,20 @@ int main(int argc, char **argv)
         reassign_string(&hw->hw_keyboard_charmap, charmap_name);
     }
 
-    if (opts->gpu) {
-        const char* gpu = opts->gpu;
-        if (!strcmp(gpu,"on") || !strcmp(gpu,"enable")) {
-            hw->hw_gpu_enabled = 1;
-        } else if (!strcmp(gpu,"off") || !strcmp(gpu,"disable")) {
-            hw->hw_gpu_enabled = 0;
-        } else if (!strcmp(gpu,"auto")) {
-            /* Nothing to do */
-        } else {
-            derror("Invalid value for -gpu <mode> parameter: %s\n", gpu);
-            derror("Valid values are: on, off or auto\n");
+    {
+        EmuglConfig config;
+
+        if (!emuglConfig_init(&config,
+                              hw->hw_gpu_enabled,
+                              hw->hw_gpu_mode,
+                              opts->gpu,
+                              0)) {
+            derror("%s", config.status);
             exit(1);
         }
+        hw->hw_gpu_enabled = config.enabled;
+        reassign_string(&hw->hw_gpu_mode, config.backend);
+        D("%s", config.status);
     }
 
     /* Quit emulator on condition that both, gpu and snapstorage are on. This is
@@ -1318,6 +1339,48 @@ int main(int argc, char **argv)
                 // '-no-accel' of '-accel off' was used explicitly. Warn about
                 // the issue but do not exit.
                 dwarning("%s emulation may not work without hardware acceleration!", abi);
+            }
+            else {
+                /* CPU acceleration is enabled and working, but if the host CPU
+                 * does not support all instruction sets specified in the x86/
+                 * x86_64 ABI, emulation may fail on unsupported instructions.
+                 * Therefore, check the capabilities of the host CPU and warn
+                 * the user if any required features are missing. */
+                uint32_t ecx = 0;
+                char buf[64], *p = buf, * const end = p + sizeof(buf);
+
+                /* Execute CPUID instruction with EAX=1 and ECX=0 to get CPU
+                 * feature bits (stored in EDX, ECX and EBX). */
+                android_get_x86_cpuid(1, 0, NULL, NULL, &ecx, NULL);
+
+                /* Theoretically, MMX and SSE/2/3 should be checked as well, but
+                 * CPU models that do not support them are probably too old to
+                 * run Android emulator. */
+                if (!(ecx & CPUID_ECX_SSSE3)) {
+                    p = bufprint(p, end, " SSSE3");
+                }
+                if (!strcmp(abi, "x86_64")) {
+                    if (!(ecx & CPUID_ECX_SSE41)) {
+                        p = bufprint(p, end, " SSE4.1");
+                    }
+                    if (!(ecx & CPUID_ECX_SSE42)) {
+                        p = bufprint(p, end, " SSE4.2");
+                    }
+                    if (!(ecx & CPUID_ECX_POPCNT)) {
+                        p = bufprint(p, end, " POPCNT");
+                    }
+                }
+
+                if (p > buf) {
+                    /* Using dwarning(..) would cause this message to be written
+                     * to stdout and filtered out by AVD Manager. But we want
+                     * the AVD Manager user to see this warning, so we resort to
+                     * fprintf(..). */
+                    fprintf(stderr, "emulator: WARNING: Host CPU is missing the"
+                            " following feature(s) required for %s emulation:%s"
+                            "\nHardware-accelerated emulation may not work"
+                            " properly!\n", abi, buf);
+                }
             }
         }
         AFREE(abi);
@@ -1476,11 +1539,6 @@ int main(int argc, char **argv)
 
     /* Setup SDL UI just before calling the code */
     init_sdl_ui(skinConfig, skinPath, opts);
-
-    if (attach_ui_to_core(opts) < 0) {
-        derror("Can't attach to core!");
-        exit(1);
-    }
 
     return qemu_main(n, args);
 }

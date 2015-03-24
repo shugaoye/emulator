@@ -39,6 +39,7 @@
 #include "ui/console.h"
 #include "sysemu/sysemu.h"
 #include "exec/gdbstub.h"
+#include "exec/code-profile.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "sysemu/char.h"
@@ -58,6 +59,7 @@
 #include "android/hw-kmsg.h"
 #include "android/hw-pipe-net.h"
 #include "android/hw-qemud.h"
+#include "android/hw-sensors.h"
 #include "android/camera/camera-service.h"
 #include "android/multitouch-port.h"
 #include "android/skin/charmap.h"
@@ -74,6 +76,7 @@
 #include "android/utils/timezone.h"
 #include "android/snapshot.h"
 #include "android/opengles.h"
+#include "android/opengl/emugl_config.h"
 #include "android/multitouch-screen.h"
 #include "exec/hwaddr.h"
 #include "android/tcpdump.h"
@@ -2605,6 +2608,10 @@ int main(int argc, char **argv, char **envp)
             case QEMU_OPTION_pidfile:
                 pid_file = optarg;
                 break;
+            case QEMU_OPTION_code_profile:
+                code_profile_dirname = optarg;
+                printf("Profile will be stored in %s\n", code_profile_dirname);
+                break;
 #ifdef TARGET_I386
             case QEMU_OPTION_win2k_hack:
                 win2k_install_hack = 1;
@@ -3030,7 +3037,7 @@ int main(int argc, char **argv, char **envp)
         /* A bit of sanity checking */
         if (width <= 0 || height <= 0    ||
             (depth != 16 && depth != 32) ||
-            (((width|height) & 3) != 0)  )
+            ((width & 1) != 0)  )
         {
             PANIC("Invalid display configuration (%d,%d,%d)",
                   width, height, depth);
@@ -3355,32 +3362,32 @@ int main(int argc, char **argv, char **envp)
      * If the parameter is undefined, this means the system image runs
      * inside an emulator that doesn't support GPU emulation at all.
      *
-     * We always start the GL ES renderer so we can gather stats on the
-     * underlying GL implementation. If GL ES acceleration is disabled,
-     * we just shut it down again once we have the strings. */
-    {
-        int qemu_gles = 0;
+     * The GL ES renderer cannot start properly if GPU emulation is disabled
+     * because this requires changing the LD_LIBRARY_PATH before launching
+     * the emulation engine. */
+    int qemu_gles = 0;
+    if (android_hw->hw_gpu_enabled) {
         if (android_initOpenglesEmulation() == 0 &&
-            android_startOpenglesRenderer(android_hw->hw_lcd_width, android_hw->hw_lcd_height) == 0)
+            android_startOpenglesRenderer(android_hw->hw_lcd_width,
+                                          android_hw->hw_lcd_height) == 0)
         {
             android_getOpenglesHardwareStrings(
                     android_gl_vendor, sizeof(android_gl_vendor),
                     android_gl_renderer, sizeof(android_gl_renderer),
                     android_gl_version, sizeof(android_gl_version));
-            if (android_hw->hw_gpu_enabled) {
-                qemu_gles = 1;
-            } else {
-                android_stopOpenglesRenderer();
-                qemu_gles = 0;
-            }
+            qemu_gles = 1;
         } else {
-            dwarning("Could not initialize OpenglES emulation, using software renderer.");
+            derror("Could not initialize OpenglES emulation, use '-gpu off' to disable it.");
+            exit(1);
         }
-        if (qemu_gles) {
-            stralloc_add_str(kernel_params, " qemu.gles=1");
-        } else {
-            stralloc_add_str(kernel_params, " qemu.gles=0");
-        }
+    }
+    if (qemu_gles) {
+        stralloc_add_str(kernel_params, " qemu.gles=1");
+        char  tmp[64];
+        snprintf(tmp, sizeof(tmp), "%d", 0x20000);
+        boot_property_add("ro.opengles.version", tmp);
+    } else {
+        stralloc_add_str(kernel_params, " qemu.gles=0");
     }
 
     /* We always force qemu=1 when running inside QEMU */
@@ -3826,6 +3833,8 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
+    android_hw_sensors_init_remote_controller();
+
     current_machine = machine;
 
     /* Set KVM's vcpu state to qemu's initial CPUOldState. */
@@ -3951,11 +3960,7 @@ int main(int argc, char **argv, char **envp)
     /* call android-specific setup function */
     android_emulation_setup();
 
-#if !defined(CONFIG_STANDALONE_CORE)
-    // For the standalone emulator (UI+core in one executable) we need to
-    // set the window title here.
     android_emulator_set_base_port(android_base_port);
-#endif
 
     if (loadvm)
         do_loadvm(cur_mon, loadvm);

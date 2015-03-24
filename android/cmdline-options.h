@@ -62,6 +62,7 @@
  *
  */
 
+OPT_FLAG( list_avds, "list available AVDs")
 CFG_PARAM( sysdir,  "<dir>",  "search for system disk images in <dir>" )
 CFG_PARAM( system,  "<file>", "read initial system image from <file>" )
 CFG_PARAM( datadir, "<dir>",  "write user data into <dir>" )
@@ -100,7 +101,7 @@ OPT_PARAM( netspeed, "<speed>", "maximum network download/upload speeds" )
 OPT_PARAM( netdelay, "<delay>", "network latency emulation" )
 OPT_FLAG ( netfast, "disable network shaping" )
 
-OPT_PARAM( trace, "<name>", "enable code profiling (F9 to start)" )
+OPT_PARAM( code_profile, "<name>", "enable code profiling" )
 OPT_FLAG ( show_kernel, "display kernel messages" )
 OPT_FLAG ( shell, "enable root shell on current terminal" )
 OPT_FLAG ( no_jni, "disable JNI checks in the Dalvik runtime" )

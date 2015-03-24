@@ -19,10 +19,12 @@ cd `dirname $0`
 OPTION_TARGETS=""
 OPTION_DEBUG=no
 OPTION_IGNORE_AUDIO=no
-OPTION_NO_PREBUILTS=no
+OPTION_AOSP_PREBUILTS_DIR=
+OPTION_NO_AOSP_PREBUILTS=
 OPTION_OUT_DIR=
 OPTION_HELP=no
 OPTION_STATIC=no
+OPTION_STRIP=no
 OPTION_MINGW=no
 
 GLES_DIR=
@@ -31,10 +33,15 @@ GLES_PROBE=yes
 
 PCBIOS_PROBE=yes
 
-QEMU_PREBUILTS_DIR=
-
 HOST_CC=${CC:-gcc}
 OPTION_CC=
+
+AOSP_PREBUILTS_DIR=$(dirname "$0")/../../prebuilts
+if [ -d "$AOSP_PREBUILTS_DIR" ]; then
+    AOSP_PREBUILTS_DIR=$(cd "$AOSP_PREBUILTS_DIR" && pwd -P 2>/dev/null)
+else
+    AOSP_PREBUILTS_DIR=
+fi
 
 for opt do
   optarg=`expr "x$opt" : 'x[^=]*=\(.*\)'`
@@ -48,6 +55,15 @@ for opt do
         VERBOSE=yes
     fi
   ;;
+  --verbosity=*)
+    if [ "$optarg" -gt 1 ]; then
+        VERBOSE=yes
+        if [ "$optarg" -gt 2 ]; then
+            VERBOSE2=yes
+        fi
+    fi
+    ;;
+
   --debug) OPTION_DEBUG=yes
   ;;
   --install=*) OPTION_TARGETS="$OPTION_TARGETS $optarg";
@@ -58,19 +74,23 @@ for opt do
   ;;
   --cc=*) OPTION_CC="$optarg"
   ;;
-  --no-strip) OPTION_NO_STRIP=yes
+  --strip) OPTION_STRIP=yes
+  ;;
+  --no-strip) OPTION_STRIP=no
   ;;
   --out-dir=*) OPTION_OUT_DIR=$optarg
   ;;
   --ignore-audio) OPTION_IGNORE_AUDIO=yes
   ;;
-  --no-prebuilts) OPTION_NO_PREBUILTS=yes
+  --no-aosp-prebuilts) OPTION_NO_AOSP_PREBUILTS=yes
+  ;;
+  --aosp-prebuilts-dir=*) OPTION_AOSP_PREBUILTS_DIR=$optarg
+  ;;
+  --build-qemu-android) true # Ignored, used by android-rebuild.sh only.
   ;;
   --static) OPTION_STATIC=yes
   ;;
   --gles-dir=*) GLES_DIR=$optarg
-  ;;
-  --qemu-prebuilts-dir=*) QEMU_PREBUILTS_DIR=$optarg
   ;;
   --no-gles) GLES_PROBE=no
   ;;
@@ -98,46 +118,128 @@ EOF
     echo "  --install=FILEPATH          Copy emulator executable to FILEPATH [$TARGETS]"
     echo "  --cc=PATH                   Specify C compiler [$HOST_CC]"
     echo "  --sdl-config=FILE           Use specific sdl-config script [$SDL_CONFIG]"
-    echo "  --no-strip                  Do not strip emulator executable"
+    echo "  --strip                     Strip emulator executables."
+    echo "  --no-strip                  Do not strip emulator executables (default)."
     echo "  --debug                     Enable debug (-O0 -g) build"
     echo "  --ignore-audio              Ignore audio messages (may build sound-less emulator)"
-    echo "  --no-prebuilts              Do not use prebuilt libraries and compiler"
+    echo "  --no-aosp-prebuilts         Do not use prebuilt toolchain"
+    echo "  --aosp-prebuilts-dir=<path> Use specific prebuilt toolchain root directory [$AOSP_PREBUILTS_DIR]"
     echo "  --out-dir=<path>            Use specific output directory [objs/]"
     echo "  --mingw                     Build Windows executable on Linux"
     echo "  --static                    Build a completely static executable"
     echo "  --verbose                   Verbose configuration"
     echo "  --debug                     Build debug version of the emulator"
     echo "  --gles-dir=PATH             Specify path to GLES host emulation sources [auto-detected]"
-    echo "  --qemu-prebuilts-dir=PATH   Specify path to QEMU prebuilt binaries"
     echo "  --no-gles                   Disable GLES emulation support"
     echo "  --no-pcbios                 Disable copying of PC Bios files"
     echo "  --no-tests                  Don't run unit test suite"
+    if [ "$IN_ANDROID_REBUILD_SH" ]; then
+        echo "  --build-qemu-android        Also build qemu-android binaries"
+    fi
     echo ""
     exit 1
 fi
 
+if [ "$OPTION_AOSP_PREBUILTS_DIR" ]; then
+    if [ "$OPTION_NO_AOSP_PREBUILTS" ]; then
+        echo "ERROR: You can't use both --no-aosp-prebuilts and --aosp-prebuilts-dir=<path>."
+        exit 1
+    fi
+    if [ ! -d "$OPTION_AOSP_PREBUILTS_DIR"/gcc -a \
+         ! -d "$OPTION_AOSP_PREBUILTS_DIR"/clang ]; then
+        echo "ERROR: Prebuilts directory does not exist: $OPTION_AOSP_PREBUILTS_DIR/gcc"
+        exit 1
+    fi
+    AOSP_PREBUILTS_DIR=$OPTION_AOSP_PREBUILTS_DIR
+elif [ "$OPTION_NO_AOSP_PREBUILTS" ]; then
+    AOSP_PREBUILTS_DIR=""
+fi
+
+# For OS X, detect the location of the SDK to use.
+# NOTE: This must happen before probing the host toolchain, because our
+#       prebuilt Clang one depends on runtime object files like crt1.10.6.o
+#       provided by the XCode SDK.
+if [ "$HOST_OS" = darwin ]; then
+    OSX_VERSION=$(sw_vers -productVersion)
+    OSX_SDK_SUPPORTED="10.8 10.7 10.6"  # in order of preference
+    OSX_SDK_INSTALLED_LIST=$(xcodebuild -showsdks 2>/dev/null | \
+            grep macosx | sed -e "s/.*macosx//g" | sort -n | tr '\n' ' ')
+    if [ -z "$OSX_SDK_INSTALLED_LIST" ]; then
+        echo "ERROR: Please install XCode on this machine!"
+        exit 1
+    fi
+    log "OSX: Installed SDKs: $OSX_SDK_INSTALLED_LIST"
+
+    OSX_SDK_VERSION=
+
+    # compare each SDK version supported with each SDK version installed
+    for SUPPORTED_VERSION in $OSX_SDK_SUPPORTED; do
+        for INSTALLED_VERSION in $OSX_SDK_INSTALLED_LIST; do
+            if [ "$SUPPORTED_VERSION" = "$INSTALLED_VERSION" ]; then
+                # use the first match found
+                OSX_SDK_VERSION=$INSTALLED_VERSION
+                break
+            fi
+        done
+        if [ "$OSX_SDK_VERSION" ]; then
+            break
+        fi
+    done
+
+    if [ "$OSX_SDK_VERSION" ]; then
+        log "OSX: Using SDK version $OSX_SDK_VERSION"
+    else
+        echo "ERROR: Only OSX SDK $OSX_SDK_SUPPORTED are supported and this machine has $OSX_SDK_VERSION."
+        echo "Please install Xcode 5 on this machine (If you have Xcode 6 installed, downgrade to Xcode 5)"
+        exit 1
+    fi
+
+    XCODE_PATH=$(xcode-select -print-path 2>/dev/null)
+    log "OSX: XCode path: $XCODE_PATH"
+
+    OSX_SDK_ROOT=$XCODE_PATH/Platforms/MacOSX.platform/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
+    log "OSX: Looking for $OSX_SDK_ROOT"
+    if [ ! -d "$OSX_SDK_ROOT" ]; then
+        OSX_SDK_ROOT=/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
+        log "OSX: Looking for $OSX_SDK_ROOT"
+        if [ ! -d "$OSX_SDK_ROOT" ]; then
+            echo "ERROR: Could not find SDK $OSX_SDK_VERSION at $OSX_SDK_ROOT"
+            exit 1
+        fi
+    fi
+    echo "OSX SDK   : Found at $OSX_SDK_ROOT"
+fi
+
 # On Linux, try to use our prebuilt toolchain to generate binaries
 # that are compatible with Ubuntu 10.4
-if [ -z "$CC" -a -z "$OPTION_CC" ] ; then
+if [ -z "$CC" -a -z "$OPTION_CC" -a -z "$OPTION_NO_AOSP_PREBUILTS" ] ; then
     PROBE_HOST_CC=
     PROBE_HOST_CFLAGS=
     if [ "$HOST_OS" = "linux" ] ; then
-        PREBUILTS_HOST_GCC=$(dirname $0)/../../prebuilts/gcc/linux-x86/host
+        PREBUILTS_HOST_GCC=$AOSP_PREBUILTS_DIR/gcc/linux-x86/host
         PROBE_HOST_CC=$PREBUILTS_HOST_GCC/x86_64-linux-glibc2.11-4.8/bin/x86_64-linux-gcc
         if [ ! -f "$PROBE_HOST_CC" ]; then
             PROBE_HOST_CC=$PREBUILTS_HOST_GCC/x86_64-linux-glibc2.11-4.6/bin/x86_64-linux-gcc
             if [ ! -f "$PROBE_HOST_CC" ] ; then
-                PROBE_HOST_CC=$(dirname $0)/../../prebuilts/tools/gcc-sdk/gcc
+                PROBE_HOST_CC=$AOSP_PREBUILTS_DIR/tools/gcc-sdk/gcc
             fi
         fi
     elif [ "$HOST_OS" = "darwin" ] ; then
-        PREBUILTS_HOST_GCC=$(dirname $0)/../../prebuilts/clang/darwin-x86/host
+        PREBUILTS_HOST_GCC=$AOSP_PREBUILTS_DIR/clang/darwin-x86/host
         PROBE_HOST_CC=$PREBUILTS_HOST_GCC/3.5/bin/clang
         PROBE_HOST_CFLAGS="-target x86_64-apple-darwin11.0.0"
+    else
+        echo "ERROR: Can't build emulator binaries on this platform. Use Linux or Darwin only!"
+        exit 1
     fi
+
     if [ -f "$PROBE_HOST_CC" ] ; then
         echo "Using prebuilt toolchain: $PROBE_HOST_CC"
         CC="$PROBE_HOST_CC $PROBE_HOST_CFLAGS"
+    else
+        echo "ERROR: Cannot find prebuilts toolchain: $PROBE_HOST_CC"
+        echo "Please use --no-aosp-prebuilts or --aosp-prebuilts-dir=<path>."
+        exit 1
     fi
 fi
 
@@ -204,7 +306,7 @@ check_android_build
 #    - locate and use prebuilt libraries
 #    - copy the new binary to the correct location
 #
-if [ "$OPTION_NO_PREBUILTS" = "yes" ] ; then
+if [ "$OPTION_NO_AOSP_PREBUILTS" ] ; then
     IN_ANDROID_BUILD=no
 fi
 
@@ -242,7 +344,7 @@ if [ "$IN_ANDROID_BUILD" = "yes" ] ; then
     fi
 else
     if [ "$USE_CCACHE" != 0 ]; then
-        CCACHE=$(which ccache 2>/dev/null)
+        CCACHE=$(which ccache 2>/dev/null || true)
     fi
 fi  # IN_ANDROID_BUILD = no
 
@@ -254,6 +356,13 @@ if [ -n "$CCACHE" -a -f "$CCACHE" ]; then
         CCACHE=
     else
         CC="$CCACHE $CC"
+        $CC --version 2>/dev/null
+        if ($CC --version 2>/dev/null | grep -q clang); then
+            # If this is clang, disable ccache-induced warnings and
+            # restore colored diagnostics.
+            # http://petereisentraut.blogspot.fr/2011/05/ccache-and-clang.html
+            CC="$CC -Qunused-arguments -fcolor-diagnostics"
+        fi
         log "Prebuilt   : CCACHE=$CCACHE"
     fi
 else
@@ -265,7 +374,7 @@ fi
 if [ "$GLES_PROBE" = "yes" ]; then
     GLES_SUPPORT=yes
     if [ -z "$GLES_DIR" ]; then
-        GLES_DIR=../../sdk/emulator/opengl
+        GLES_DIR=distrib/android-emugl
         log2 "GLES       : Probing source dir: $GLES_DIR"
         if [ ! -d "$GLES_DIR" ]; then
             GLES_DIR=../opengl
@@ -285,7 +394,7 @@ if [ "$GLES_PROBE" = "yes" ]; then
 fi
 
 if [ "$PCBIOS_PROBE" = "yes" ]; then
-    PCBIOS_DIR=$(dirname "$0")/../../prebuilts/qemu-kernel/x86/pc-bios
+    PCBIOS_DIR=$AOSP_PREBUILTS_DIR/qemu-kernel/x86/pc-bios
     if [ ! -d "$PCBIOS_DIR" ]; then
         log2 "PC Bios    : Probing $PCBIOS_DIR (missing)"
         PCBIOS_DIR=../pc-bios
@@ -300,36 +409,6 @@ if [ "$PCBIOS_PROBE" = "yes" ]; then
             cp -f $PCBIOS_DIR/$BIOS_FILE $OUT_DIR/lib/pc-bios/$BIOS_FILE
         done
     fi
-fi
-
-# For OS X, detect the location of the SDK to use.
-if [ "$HOST_OS" = darwin ]; then
-    OSX_VERSION=$(sw_vers -productVersion)
-    OSX_SDK_SUPPORTED="10.6 10.7 10.8"
-    OSX_SDK_INSTALLED_LIST=$(xcodebuild -showsdks 2>/dev/null | grep macosx | sed -e "s/.*macosx//g" | sort -n)
-    if [ -z "$OSX_SDK_INSTALLED_LIST" ]; then
-        echo "ERROR: Please install XCode on this machine!"
-        exit 1
-    fi
-    log "OSX: Installed SDKs: $OSX_SDK_INSTALLED_LIST"
-
-    OSX_SDK_VERSION=$(echo "$OSX_SDK_INSTALLED_LIST" | tr ' ' '\n' | head -1)
-    log "OSX: Using SDK version $OSX_SDK_VERSION"
-
-    XCODE_PATH=$(xcode-select -print-path 2>/dev/null)
-    log "OSX: XCode path: $XCODE_PATH"
-
-    OSX_SDK_ROOT=$XCODE_PATH/Platforms/MacOSX.platform/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
-    log "OSX: Looking for $OSX_SDK_ROOT"
-    if [ ! -d "$OSX_SDK_ROOT" ]; then
-        OSX_SDK_ROOT=/Developer/SDKs/MacOSX${OSX_SDK_VERSION}.sdk
-        log "OSX: Looking for $OSX_SDK_ROOT"
-        if [ ! -d "$OSX_SDK_ROOT" ]; then
-            echo "ERROR: Could not find SDK $OSX_SDK_VERSION at $OSX_SDK_ROOT"
-            exit 1
-        fi
-    fi
-    echo "OSX SDK   : Found at $OSX_SDK_ROOT"
 fi
 
 # we can build the emulator with Cygwin, so enable it
@@ -566,8 +645,8 @@ case $TARGET_OS in
         ;;
 esac
 
-# Strip executables and shared libraries unless --debug is used.
-if [ "$OPTION_DEBUG" != "yes" -a "$OPTION_NO_STRIP" != "yes" ]; then
+# Strip executables and shared libraries when needed.
+if [ "$OPTION_DEBUG" != "yes" -a "$OPTION_STRIP" = "yes" ]; then
     case $HOST_OS in
         darwin)
             LDFLAGS="$LDFLAGS -Wl,-S"
@@ -761,15 +840,6 @@ python scripts/qapi-types.py qapi.types --output-dir=$AUTOGENERATED_DIR -b < qap
 python scripts/qapi-visit.py --output-dir=$AUTOGENERATED_DIR -b < qapi-schema.json
 python scripts/qapi-commands.py --output-dir=$AUTOGENERATED_DIR -m < qapi-schema.json
 log "Generate   : $AUTOGENERATED_DIR"
-
-if [ "$QEMU_PREBUILTS_DIR" ]; then
-    if [ ! -d "$QEMU_PREBUILTS_DIR/binaries" ]; then
-        panic "Missing QEMU prebuilts directory: $QEMU_PREBUILTS_DIR/binaries"
-    fi
-    log "Copying QEMU prebuilt binaries to: $OUT_DIR/qemu"
-    mkdir -p "$OUT_DIR"/qemu || panic "Could not create $OUT_DIR/qemu"
-    cp -rp "$QEMU_PREBUILTS_DIR/binaries"/* "$OUT_DIR/qemu"
-fi
 
 clean_temp
 
